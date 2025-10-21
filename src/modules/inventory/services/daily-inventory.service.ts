@@ -21,6 +21,7 @@ import {
 } from '../entity/inventory-transactions.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import BaseResponse from '../../../common/response/base.response';
+import { FilterDailyInventoryDto } from '../dto/filter-daily-inventory.dto';
 import {
   ResponsePagination,
   ResponseSuccess,
@@ -65,7 +66,7 @@ export class DailyInventoryService extends BaseResponse {
    * - isActive: boolean
    * - page, pageSize: pagination
    */
-  async findAll(query: any): Promise<ResponsePagination> {
+  async findAll(query: FilterDailyInventoryDto): Promise<ResponsePagination> {
     const {
       businessDate,
       productCodeId,
@@ -75,16 +76,13 @@ export class DailyInventoryService extends BaseResponse {
       pageSize = 10,
     } = query;
 
-    // Default to today if no date specified
-    const targetDate = businessDate || this.formatDate(new Date());
-
     const queryBuilder = this.dailyInventoryRepo
       .createQueryBuilder('di')
       .leftJoinAndSelect('di.productCode', 'pc')
       .leftJoinAndSelect('pc.productId', 'product')
       .leftJoinAndSelect('pc.sizeId', 'size')
       .leftJoinAndSelect('pc.categoryId', 'category')
-      .where('di.businessDate = :businessDate', { businessDate: targetDate })
+      .where('di.businessDate = :businessDate', { businessDate: businessDate })
       .andWhere('di.deletedAt IS NULL');
 
     // Filter by productCodeId
@@ -107,7 +105,7 @@ export class DailyInventoryService extends BaseResponse {
     queryBuilder.skip(skip).take(pageSize);
 
     // Order by product name
-    queryBuilder.orderBy('product.productName', 'ASC');
+    queryBuilder.orderBy('product.name', 'ASC');
 
     const items = await queryBuilder.getMany();
 
@@ -517,5 +515,182 @@ export class DailyInventoryService extends BaseResponse {
     }
 
     return inventory;
+  }
+
+  /**
+   * Check stock availability for order items based on invoice date
+   *
+   * @param invoiceDate - The invoice date to check stock for (YYYY-MM-DD)
+   * @param orderItems - Array of { productCodeId, quantity }
+   * @returns Stock validation result with item-level details
+   */
+  async checkStock(
+    invoiceDate: string,
+    orderItems: Array<{ productCodeId: number; quantity: number }>,
+  ): Promise<ResponseSuccess> {
+    // Validate date format
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(invoiceDate)) {
+      throw new BadRequestException('Invalid date format. Use YYYY-MM-DD');
+    }
+
+    // Get today's date for validation type determination
+    const today = new Date();
+    const todayStr = this.formatDate(today);
+    const invoiceDateObj = new Date(invoiceDate);
+
+    // Determine validation type
+    let validationType: 'SAME_DAY' | 'FUTURE_DATE' | 'PAST_DATE';
+    if (invoiceDate === todayStr) {
+      validationType = 'SAME_DAY';
+    } else if (invoiceDateObj > today) {
+      validationType = 'FUTURE_DATE';
+    } else {
+      validationType = 'PAST_DATE';
+    }
+
+    // Get all product codes for the order items
+    const productCodeIds = orderItems.map((item) => item.productCodeId);
+
+    // Fetch daily inventory for the invoice date
+    const inventoryRecords = await this.dailyInventoryRepo
+      .createQueryBuilder('di')
+      .leftJoinAndSelect('di.productCode', 'pc')
+      .leftJoinAndSelect('pc.productId', 'product')
+      .leftJoinAndSelect('pc.sizeId', 'size')
+      .leftJoinAndSelect('pc.categoryId', 'category')
+      .where('di.businessDate = :businessDate', { businessDate: invoiceDate })
+      .andWhere('di.productCodeId IN (:...productCodeIds)', { productCodeIds })
+      .andWhere('di.deletedAt IS NULL')
+      .getMany();
+
+    // Build a map for quick lookup
+    const inventoryMap = new Map<number, DailyInventory>();
+    inventoryRecords.forEach((inv) => {
+      inventoryMap.set(inv.productCodeId, inv);
+    });
+
+    // Validate each order item
+    const items = orderItems.map((orderItem) => {
+      const inventory = inventoryMap.get(orderItem.productCodeId);
+
+      // Default values if no inventory record found
+      if (!inventory) {
+        return {
+          productCodeId: orderItem.productCodeId,
+          productCode: 'UNKNOWN',
+          productName: 'Unknown Product',
+          requestedQuantity: orderItem.quantity,
+          availableStock: 0,
+          reservedStock: 0,
+          actualAvailable: 0,
+          minimumStock: 0,
+          stockStatus: 'OUT_OF_STOCK' as const,
+          isValid: false,
+          shortage: orderItem.quantity,
+          message: 'No inventory record found for this date',
+        };
+      }
+
+      // Calculate actual available = stokAkhir (which already includes -dipesan)
+      // stokAkhir = stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample
+      const actualAvailable = Number(inventory.stokAkhir) || 0;
+      const requestedQuantity = orderItem.quantity;
+      const shortage = Math.max(0, requestedQuantity - actualAvailable);
+
+      // Determine stock status
+      let stockStatus:
+        | 'SUFFICIENT'
+        | 'LOW_STOCK'
+        | 'INSUFFICIENT'
+        | 'OUT_OF_STOCK';
+      let isValid: boolean;
+      let message: string;
+
+      if (actualAvailable === 0) {
+        stockStatus = 'OUT_OF_STOCK';
+        isValid = false;
+        message = 'Product is out of stock';
+      } else if (requestedQuantity > actualAvailable) {
+        stockStatus = 'INSUFFICIENT';
+        isValid = false;
+        message = `Insufficient stock. Need ${shortage} more units`;
+      } else if (actualAvailable <= (Number(inventory.minimumStock) || 0)) {
+        stockStatus = 'LOW_STOCK';
+        isValid = true;
+        message = 'Stock is running low but sufficient for this order';
+      } else {
+        stockStatus = 'SUFFICIENT';
+        isValid = true;
+        message = 'Stock is sufficient';
+      }
+
+      return {
+        productCodeId: orderItem.productCodeId,
+        productCode: inventory.productCode?.productCode || 'N/A',
+        productName: inventory.productCode?.productId?.name || 'Unknown',
+        size: inventory.productCode?.sizeId?.sizeValue || 'N/A',
+        category: inventory.productCode?.categoryId?.name || 'N/A',
+        requestedQuantity,
+        availableStock: Number(inventory.stokAkhir) || 0,
+        reservedStock: Number(inventory.dipesan) || 0,
+        actualAvailable,
+        minimumStock: Number(inventory.minimumStock) || 0,
+        stockStatus,
+        isValid,
+        shortage,
+        message,
+      };
+    });
+
+    // Calculate summary
+    const summary = {
+      totalItems: items.length,
+      sufficientItems: items.filter((i) => i.stockStatus === 'SUFFICIENT')
+        .length,
+      lowStockItems: items.filter((i) => i.stockStatus === 'LOW_STOCK').length,
+      insufficientItems: items.filter((i) => i.stockStatus === 'INSUFFICIENT')
+        .length,
+      outOfStockItems: items.filter((i) => i.stockStatus === 'OUT_OF_STOCK')
+        .length,
+    };
+
+    // Determine overall validation result
+    const hasInsufficientStock =
+      summary.insufficientItems > 0 || summary.outOfStockItems > 0;
+    const isValid = !hasInsufficientStock;
+
+    // For same-day orders, block if insufficient
+    // For future orders, warn but don't block
+    const shouldBlock = validationType === 'SAME_DAY' && hasInsufficientStock;
+
+    // Build response message
+    let validationMessage: string;
+    if (validationType === 'SAME_DAY') {
+      if (shouldBlock) {
+        validationMessage =
+          'Cannot create order: Insufficient stock for same-day invoice';
+      } else {
+        validationMessage = 'Stock validation passed for same-day invoice';
+      }
+    } else if (validationType === 'FUTURE_DATE') {
+      if (hasInsufficientStock) {
+        validationMessage = `Warning: Projected stock shortage for invoice date ${invoiceDate}. Ensure production before this date.`;
+      } else {
+        validationMessage = `Stock projection looks good for invoice date ${invoiceDate}`;
+      }
+    } else {
+      validationMessage = `Historical stock check for date ${invoiceDate}`;
+    }
+
+    return this._success('Stock validation completed', {
+      isValid,
+      shouldBlock,
+      validationType,
+      invoiceDate,
+      items,
+      summary,
+      message: validationMessage,
+    });
   }
 }

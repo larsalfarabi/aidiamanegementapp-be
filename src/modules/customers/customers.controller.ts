@@ -6,6 +6,7 @@ import {
   Put,
   UseGuards,
   Delete,
+  Body,
 } from '@nestjs/common';
 import { CustomersService } from './customers.service';
 import {
@@ -68,6 +69,11 @@ export class CustomersController {
     return this.customersService.getCustomerProductCatalog(+id, query);
   }
 
+  @Get(':id/product-catalog-ids')
+  async getCustomerProductCatalogIds(@Param('id') id: string) {
+    return this.customersService.getCustomerProductCatalogIds(+id);
+  }
+
   @Post('product-catalog')
   async addProdutcToCatalog(
     @InjectCreatedBy() createCatalogDto: CreateCustomerProductCatalogDto,
@@ -78,8 +84,7 @@ export class CustomersController {
   @Put(':id/product-catalog')
   async updateProductInCatalog(
     @Param('id') id: string,
-
-    payload: UpdateCustomerProductCatalogDto,
+    @InjectUpdatedBy() payload: UpdateCustomerProductCatalogDto,
   ) {
     return this.customersService.updateProductInCatalog(+id, payload);
   }

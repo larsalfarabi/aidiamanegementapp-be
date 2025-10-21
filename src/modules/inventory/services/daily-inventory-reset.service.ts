@@ -58,8 +58,8 @@ export class DailyInventoryResetService {
     const startTime = Date.now();
 
     try {
-      // Execute reset with retry mechanism
-      await this.executeResetWithRetry();
+      // Execute reset with retry mechanism (isManualTrigger = false for cron)
+      await this.executeResetWithRetry(3, false);
 
       const duration = Date.now() - startTime;
       this.logger.log(
@@ -79,12 +79,15 @@ export class DailyInventoryResetService {
    * Execute reset with exponential backoff retry
    * Retry delays: 5s, 15s, 30s
    */
-  private async executeResetWithRetry(maxRetries: number = 3): Promise<void> {
+  private async executeResetWithRetry(
+    maxRetries: number = 3,
+    isManualTrigger: boolean = false,
+  ): Promise<void> {
     const retryDelays = [5000, 15000, 30000]; // 5s, 15s, 30s
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        await this.performDailyReset();
+        await this.performDailyReset(isManualTrigger);
         return; // Success, exit retry loop
       } catch (error) {
         const isLastAttempt = attempt === maxRetries - 1;
@@ -107,8 +110,12 @@ export class DailyInventoryResetService {
   /**
    * Perform the actual daily reset operations
    * Uses database transaction with row-level locking
+   *
+   * @param isManualTrigger - If true, strict validation. If false (cron), skip validation if already done today.
    */
-  private async performDailyReset(): Promise<void> {
+  private async performDailyReset(
+    isManualTrigger: boolean = false,
+  ): Promise<void> {
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
@@ -116,14 +123,66 @@ export class DailyInventoryResetService {
     try {
       const today = new Date();
       const businessDate = this.formatDate(today);
-      const yesterday = new Date(today);
-      yesterday.setDate(yesterday.getDate() - 1);
-      const previousBusinessDate = this.formatDate(yesterday);
 
-      this.logger.log(`📅 Business Date: ${businessDate}`);
-      this.logger.log(`📅 Previous Business Date: ${previousBusinessDate}`);
+      // FIXED: Get the latest businessDate from database instead of assuming yesterday
+      // This prevents issues when manual reset is triggered after cron job failed
+      const latestRecord = await queryRunner.query(
+        `
+        SELECT businessDate 
+        FROM daily_inventory 
+        WHERE deletedAt IS NULL 
+        ORDER BY businessDate DESC 
+        LIMIT 1
+        `,
+      );
 
-      // Step 1: Create snapshots for yesterday's data
+      let previousBusinessDate: string;
+
+      if (latestRecord && latestRecord.length > 0) {
+        // IMPORTANT: Format the database date to string for comparison
+        const dbDate = new Date(latestRecord[0].businessDate);
+        previousBusinessDate = this.formatDate(dbDate);
+        this.logger.log(
+          `📅 Latest record found in database: ${previousBusinessDate} (raw: ${latestRecord[0].businessDate})`,
+        );
+      } else {
+        // Fallback to yesterday if no records exist
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        previousBusinessDate = this.formatDate(yesterday);
+        this.logger.warn(
+          `⚠️ No records found in database. Using yesterday as fallback: ${previousBusinessDate}`,
+        );
+      }
+
+      this.logger.log(`📅 Business Date (Today): ${businessDate}`);
+      this.logger.log(
+        `📅 Previous Business Date (Source): ${previousBusinessDate}`,
+      );
+      this.logger.log(
+        `🔧 Trigger Type: ${isManualTrigger ? 'MANUAL' : 'CRON (Scheduled)'}`,
+      );
+
+      // Check if we're trying to reset to a date that already exists
+      if (previousBusinessDate === businessDate) {
+        // If manual trigger, throw error (prevent user from double-resetting)
+        // If cron trigger, just skip silently (reset already done today)
+        if (isManualTrigger) {
+          this.logger.warn(
+            `⚠️ Latest database record is already today (${businessDate}). Reset already completed.`,
+          );
+          throw new Error(
+            `Reset already completed for ${businessDate}. Latest record in database matches today's date.`,
+          );
+        } else {
+          this.logger.log(
+            `ℹ️ Reset already completed for ${businessDate}. Cron job skipping (idempotent behavior).`,
+          );
+          return; // Skip silently for cron
+        }
+      }
+
+      // Step 1: Create snapshots for the latest date's data
       await this.createDailySnapshots(queryRunner, previousBusinessDate);
 
       // Step 2: Carry forward and reset daily inventory
@@ -156,7 +215,51 @@ export class DailyInventoryResetService {
   ): Promise<void> {
     this.logger.log(`📸 Creating snapshots for ${previousBusinessDate}...`);
 
-    // Insert snapshots from yesterday's daily_inventory
+    // First, check if data exists for the given date
+    const checkResult = await queryRunner.query(
+      `
+      SELECT COUNT(*) as count
+      FROM daily_inventory
+      WHERE businessDate = ?
+        AND isActive = 1
+        AND deletedAt IS NULL
+      `,
+      [previousBusinessDate],
+    );
+
+    const recordCount = checkResult[0].count;
+    this.logger.log(
+      `📊 Found ${recordCount} active records for ${previousBusinessDate}`,
+    );
+
+    if (recordCount === 0) {
+      this.logger.warn(
+        `⚠️ No records found for ${previousBusinessDate}. Cannot create snapshots.`,
+      );
+      throw new Error(
+        `Cannot create snapshots: No active inventory records found for ${previousBusinessDate}`,
+      );
+    }
+
+    // Check if snapshots already exist for this date
+    const existingSnapshots = await queryRunner.query(
+      `
+      SELECT COUNT(*) as count
+      FROM daily_inventory_snapshots
+      WHERE snapshotDate = ?
+      `,
+      [previousBusinessDate],
+    );
+
+    const existingCount = existingSnapshots[0].count;
+    if (existingCount > 0) {
+      this.logger.log(
+        `ℹ️ Snapshots already exist for ${previousBusinessDate} (${existingCount} records). Skipping snapshot creation.`,
+      );
+      return;
+    }
+
+    // Insert snapshots from the specified date's daily_inventory
     const result = await queryRunner.query(
       `
       INSERT INTO daily_inventory_snapshots (
@@ -339,10 +442,15 @@ export class DailyInventoryResetService {
   }
 
   /**
-   * Utility: Format date to YYYY-MM-DD
+   * Utility: Format date to YYYY-MM-DD using Jakarta timezone
+   * Fixes timezone issue where UTC conversion causes wrong date
    */
   private formatDate(date: Date): string {
-    return date.toISOString().split('T')[0];
+    // Use Indonesian timezone (WIB/UTC+7) to format date
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 
   /**
@@ -360,7 +468,8 @@ export class DailyInventoryResetService {
     this.logger.log('🔧 Manual daily reset triggered...');
 
     try {
-      await this.executeResetWithRetry();
+      // Execute reset with retry mechanism (isManualTrigger = true for manual)
+      await this.executeResetWithRetry(3, true);
       return {
         success: true,
         message: 'Daily reset completed successfully',
@@ -385,10 +494,13 @@ export class DailyInventoryResetService {
     nextRun: string;
   }> {
     // Get last snapshot to verify job is working
-    const lastSnapshot = await this.snapshotsRepo.findOne({
-      order: { snapshotDate: 'DESC', createdAt: 'DESC' },
-      relations: ['productCode'],
-    });
+    const lastSnapshot = await this.snapshotsRepo
+      .createQueryBuilder('snapshot')
+      .leftJoinAndSelect('snapshot.productCode', 'productCode')
+      .orderBy('snapshot.snapshotDate', 'DESC')
+      .addOrderBy('snapshot.createdAt', 'DESC')
+      .limit(1)
+      .getOne();
 
     // Calculate next run time (00:00 WIB)
     const now = new Date();
@@ -410,6 +522,73 @@ export class DailyInventoryResetService {
           }
         : null,
       nextRun: nextRun.toISOString(),
+    };
+  }
+
+  /**
+   * Check inventory dates in database for debugging
+   */
+  async checkInventoryDates(): Promise<{
+    inventoryDates: any[];
+    snapshotDates: any[];
+    latestInventory: any;
+    latestSnapshot: any;
+  }> {
+    // Get all unique business dates with count
+    const inventoryDates = await this.dataSource.query(
+      `
+      SELECT businessDate, COUNT(*) as productCount, 
+             SUM(stokAwal) as totalStokAwal,
+             SUM(stokAkhir) as totalStokAkhir
+      FROM daily_inventory
+      WHERE deletedAt IS NULL
+      GROUP BY businessDate
+      ORDER BY businessDate DESC
+      LIMIT 10
+      `,
+    );
+
+    // Get all snapshot dates with count
+    const snapshotDates = await this.dataSource.query(
+      `
+      SELECT snapshotDate, COUNT(*) as snapshotCount,
+             SUM(stokAwal) as totalStokAwal,
+             SUM(stokAkhir) as totalStokAkhir
+      FROM daily_inventory_snapshots
+      GROUP BY snapshotDate
+      ORDER BY snapshotDate DESC
+      LIMIT 10
+      `,
+    );
+
+    // Get latest inventory record
+    const latestInventory = await this.dataSource.query(
+      `
+      SELECT businessDate, COUNT(*) as count
+      FROM daily_inventory
+      WHERE deletedAt IS NULL
+      GROUP BY businessDate
+      ORDER BY businessDate DESC
+      LIMIT 1
+      `,
+    );
+
+    // Get latest snapshot
+    const latestSnapshot = await this.dataSource.query(
+      `
+      SELECT snapshotDate, COUNT(*) as count
+      FROM daily_inventory_snapshots
+      GROUP BY snapshotDate
+      ORDER BY snapshotDate DESC
+      LIMIT 1
+      `,
+    );
+
+    return {
+      inventoryDates,
+      snapshotDates,
+      latestInventory: latestInventory[0] || null,
+      latestSnapshot: latestSnapshot[0] || null,
     };
   }
 }

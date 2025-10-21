@@ -75,6 +75,11 @@ export class RecordSaleDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsDate()
+  @Type(() => Date)
+  invoiceDate?: Date; // ✅ NEW: Invoice date for determining which daily_inventory to update
 }
 
 /**

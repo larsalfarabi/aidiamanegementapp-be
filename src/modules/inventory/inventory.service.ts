@@ -725,7 +725,7 @@ export class InventoryService extends BaseResponse {
     query: FilterDailyInventoryDto,
   ): Promise<ResponsePagination> {
     const {
-      date,
+      businessDate,
       productCodeId,
       stockStatus,
       isActive = true,
@@ -735,7 +735,7 @@ export class InventoryService extends BaseResponse {
     } = query;
 
     // Set target date (default: today in WIB timezone)
-    const targetDate = date ? new Date(date) : new Date();
+    const targetDate = businessDate ? new Date(businessDate) : new Date();
     const startOfDay = new Date(targetDate);
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(targetDate);

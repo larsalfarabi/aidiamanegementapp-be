@@ -137,6 +137,7 @@ export class UpdateCustomerProductCatalogDto extends PickType(
     'discountPercentage',
     'effectiveDate',
     'expiryDate',
+    'notes',
     'updatedBy',
   ],
 ) {}

@@ -354,42 +354,68 @@ export class OrdersService extends BaseResponse {
 
     // ✅ Record inventory transactions for each order item
     // This updates daily_inventory.dipesan and creates audit trail
+    // BUT only for same-day orders (invoice date = today)
     const userId =
       typeof createOrderDto.createdBy === 'object'
         ? createOrderDto.createdBy.id
         : createOrderDto.createdBy;
 
     if (!userId) {
-      throw new BadRequestException('createdBy user ID is required');
+      throw new BadRequestException('User ID is required for creating order');
     }
 
-    for (const orderItem of createdOrderItems) {
-      try {
-        await this.inventoryTransactionService.recordSale(
-          {
-            productCodeId: orderItem.productCodeId,
-            quantity: orderItem.quantity,
-            orderId: savedOrder.id,
-            customerName: customer.customerName,
-            notes: `Order ${savedOrder.orderNumber} - ${orderItem.productName}`,
-          },
-          userId,
-        );
-      } catch (error) {
-        // Log error but don't fail order creation
-        // The transaction will fail if insufficient stock
-        console.error(
-          `[ORDER ${savedOrder.orderNumber}] Failed to record inventory transaction for product ${orderItem.productCodeId}:`,
-          error.message,
-        );
-        // In production, you might want to:
-        // 1. Rollback the order creation
-        // 2. Send alert to admin
-        // 3. Mark order as "pending inventory confirmation"
-        throw new BadRequestException(
-          `Failed to reserve inventory for product ${orderItem.productName}: ${error.message}`,
-        );
+    // ✅ Check if invoice date is today (same-day order)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const invoiceDateOnly = new Date(invoiceDate);
+    invoiceDateOnly.setHours(0, 0, 0, 0);
+
+    const isSameDayOrder = invoiceDateOnly.getTime() === today.getTime();
+
+    if (isSameDayOrder) {
+      // ✅ SAME-DAY ORDER: Record inventory transaction immediately
+      this.logger.log(
+        `[ORDER ${orderNumber}] Same-day order detected - recording inventory transactions`,
+      );
+
+      // ✅ FIX: Use original items array instead of createdOrderItems
+      // to ensure we have correct productCodeId and quantity
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const orderItem = createdOrderItems[i];
+
+        try {
+          await this.inventoryTransactionService.recordSale(
+            {
+              productCodeId: item.productCodeId,
+              quantity: item.quantity,
+              orderId: savedOrder.id,
+              invoiceDate: invoiceDate, // Pass Date object
+              notes: `Order ${orderNumber} - ${item.productName}`,
+            },
+            userId,
+          );
+
+          this.logger.log(
+            `[ORDER ${orderNumber}] Inventory transaction recorded for product ${item.productCodeId}`,
+          );
+        } catch (error) {
+          this.logger.error(
+            `[ORDER ${orderNumber}] Failed to record inventory transaction for product ${item.productCodeId}: ${error.message}`,
+          );
+          throw new BadRequestException(
+            `Failed to reserve inventory for product ${item.productName}: ${error.message}`,
+          );
+        }
       }
+    } else {
+      // ✅ FUTURE-DATED ORDER: Skip inventory transaction for now
+      this.logger.log(
+        `[ORDER ${orderNumber}] Future-dated order (invoice: ${invoiceDate.toISOString().split('T')[0]}) - skipping inventory transaction`,
+      );
+      this.logger.log(
+        `[ORDER ${orderNumber}] Inventory will be reserved when invoice date arrives`,
+      );
     }
 
     // Return created order with items
@@ -551,6 +577,7 @@ export class OrdersService extends BaseResponse {
 
     // ✅ Reverse inventory transactions for each order item
     // This decrements daily_inventory.dipesan and creates cancellation audit trail
+    // BUT only for same-day orders (where inventory was already reserved)
     const userId =
       typeof payload.deletedBy === 'object'
         ? payload.deletedBy.id
@@ -560,26 +587,47 @@ export class OrdersService extends BaseResponse {
       throw new BadRequestException('deletedBy user ID is required');
     }
 
-    for (const orderItem of order.orderItems) {
-      try {
-        await this.inventoryTransactionService.reverseSale(
-          order.id,
-          orderItem.productCodeId,
-          orderItem.quantity,
-          userId,
-          `Order ${order.orderNumber} cancelled/deleted`,
-        );
-      } catch (error) {
-        // Log error but continue with deletion
-        console.error(
-          `[ORDER ${order.orderNumber}] Failed to reverse inventory transaction for product ${orderItem.productCodeId}:`,
-          error.message,
-        );
-        // In production, you might want to:
-        // 1. Alert admin about inventory inconsistency
-        // 2. Create manual adjustment task
-        // Note: We continue with soft delete even if reversal fails
+    // ✅ Check if invoice date is today (same-day order)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const invoiceDateOnly = new Date(order.invoiceDate);
+    invoiceDateOnly.setHours(0, 0, 0, 0);
+
+    const isSameDayOrder = invoiceDateOnly.getTime() === today.getTime();
+
+    if (isSameDayOrder) {
+      // ✅ SAME-DAY ORDER: Reverse inventory transaction
+      this.logger.log(
+        `[ORDER ${order.orderNumber}] Same-day order - reversing inventory transactions`,
+      );
+
+      for (const orderItem of order.orderItems) {
+        try {
+          await this.inventoryTransactionService.reverseSale(
+            order.id,
+            orderItem.productCodeId,
+            orderItem.quantity,
+            userId,
+            `Order ${order.orderNumber} cancelled/deleted`,
+            order.invoiceDate, // ✅ CRITICAL: Pass invoice date to reverse correct daily_inventory
+          );
+        } catch (error) {
+          // Log error but continue with deletion
+          console.error(
+            `[ORDER ${order.orderNumber}] Failed to reverse inventory transaction for product ${orderItem.productCodeId}:`,
+            error.message,
+          );
+          // In production, you might want to:
+          // 1. Alert admin about inventory inconsistency
+          // 2. Create manual adjustment task
+          // Note: We continue with soft delete even if reversal fails
+        }
       }
+    } else {
+      // ✅ FUTURE-DATED ORDER: No need to reverse (was never reserved)
+      this.logger.log(
+        `[ORDER ${order.orderNumber}] Future-dated order - no inventory reversal needed`,
+      );
     }
 
     // Perform soft delete

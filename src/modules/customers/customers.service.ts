@@ -137,8 +137,12 @@ export class CustomersService extends BaseResponse {
           'cpc.notes',
           'pc.id',
           'pc.productCode',
+          'product.id',
           'product.name',
+          'product.productType',
+          'category.id',
           'category.name',
+          'size.id',
           'size.sizeValue',
         ])
         .leftJoin('cpc.productCode', 'pc')
@@ -159,6 +163,25 @@ export class CustomersService extends BaseResponse {
         pageSize!,
       );
     }
+  }
+
+  async getCustomerProductCatalogIds(
+    customerId: number,
+  ): Promise<ResponseSuccess> {
+    const result = await this.customerProductCatalogRepo.find({
+      where: {
+        customerId,
+        isActive: true,
+      },
+      select: ['productCodeId'],
+    });
+
+    const productCodeIds = result.map((item) => item.productCodeId);
+
+    return this._success(
+      'Berhasil mengambil daftar product code ID',
+      productCodeIds,
+    );
   }
 
   async delete(

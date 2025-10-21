@@ -28,6 +28,7 @@ import {
   RecordWasteDto,
   AdjustStockDto,
   FilterDailyInventoryDto,
+  CheckStockDto,
 } from './dto';
 
 interface AuthRequest extends Request {
@@ -448,5 +449,52 @@ export class InventoryController {
   @Get('admin/reset-status')
   async getResetStatus() {
     return this.dailyResetService.getResetStatus();
+  }
+
+  /**
+   * GET /inventory/admin/check-dates - Check inventory dates in database
+   *
+   * Returns list of dates with inventory records for debugging
+   */
+  @Get('admin/check-dates')
+  async checkInventoryDates() {
+    return this.dailyResetService.checkInventoryDates();
+  }
+
+  // ==================== STOCK VALIDATION ====================
+
+  /**
+   * POST /inventory/check-stock - Check stock availability for order items
+   *
+   * This endpoint validates stock based on invoice date.
+   * - SAME_DAY orders: Blocks if insufficient stock
+   * - FUTURE_DATE orders: Shows warning but allows proceed
+   * - PAST_DATE orders: Historical validation only
+   *
+   * Request body:
+   * {
+   *   "invoiceDate": "2025-10-20",
+   *   "orderItems": [
+   *     { "productCodeId": 1, "quantity": 100 },
+   *     { "productCodeId": 2, "quantity": 50 }
+   *   ]
+   * }
+   *
+   * Response:
+   * {
+   *   "isValid": true/false,
+   *   "shouldBlock": true/false,
+   *   "validationType": "SAME_DAY" | "FUTURE_DATE" | "PAST_DATE",
+   *   "items": [...],
+   *   "summary": { totalItems, sufficientItems, insufficientItems, ... }
+   * }
+   */
+  @Post('check-stock')
+  @HttpCode(HttpStatus.OK)
+  async checkStock(@Body() checkStockDto: CheckStockDto) {
+    return this.dailyInventoryService.checkStock(
+      checkStockDto.invoiceDate,
+      checkStockDto.orderItems,
+    );
   }
 }
