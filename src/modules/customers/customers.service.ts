@@ -146,9 +146,9 @@ export class CustomersService extends BaseResponse {
           'size.sizeValue',
         ])
         .leftJoin('cpc.productCode', 'pc')
-        .leftJoin('pc.productId', 'product')
-        .leftJoin('pc.categoryId', 'category')
-        .leftJoin('pc.sizeId', 'size')
+        .leftJoin('pc.product', 'product')
+        .leftJoin('pc.category', 'category')
+        .leftJoin('pc.size', 'size')
         .where('cpc.customerId = :customerId', { customerId })
         .andWhere('cpc.isActive = :isActive', { isActive: true })
         .take(pageSize)

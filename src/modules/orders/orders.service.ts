@@ -130,11 +130,13 @@ export class OrdersService extends BaseResponse {
           'size.id',
           'size.sizeValue',
           'size.unitOfMeasure',
-          'size.volumeMili',
+          'size.baseUnit',
+          'size.baseValue',
+          'size.categoryType',
         ])
-        .leftJoin('pc.productId', 'product')
-        .leftJoin('pc.categoryId', 'category')
-        .leftJoin('pc.sizeId', 'size')
+        .leftJoin('pc.product', 'product')
+        .leftJoin('pc.category', 'category')
+        .leftJoin('pc.size', 'size')
         .where('pc.id = :id', { id: item.productCodeId })
         .andWhere('pc.isActive = :isActive', { isActive: true })
         .getOne();
@@ -206,9 +208,9 @@ export class OrdersService extends BaseResponse {
       subtotal += lineTotalAfterDiscount;
 
       // ✅ FIXED: Extract relations properly from query result
-      const product = productCodeData.productId;
-      const category = productCodeData.categoryId;
-      const size = productCodeData.sizeId;
+      const product = productCodeData.product;
+      const category = productCodeData.category;
+      const size = productCodeData.size;
 
       // ✅ Build complete product name: Product + Category + ProductType + Size
       // Format: "PRODUCT_NAME CATEGORY_NAME PRODUCT_TYPE @ SIZE_VALUE"
@@ -391,7 +393,7 @@ export class OrdersService extends BaseResponse {
               quantity: item.quantity,
               orderId: savedOrder.id,
               invoiceDate: invoiceDate, // Pass Date object
-              notes: `Order ${orderNumber} - ${item.productName}`,
+              notes: createOrderDto.customerNotes,
             },
             userId,
           );
@@ -438,9 +440,7 @@ export class OrdersService extends BaseResponse {
       .leftJoinAndSelect('order.customer', 'customer')
       .leftJoinAndSelect('order.orderItems', 'orderItems')
       .leftJoinAndSelect('orderItems.productCode', 'productCode')
-      .leftJoinAndSelect('productCode.productId', 'product')
-      .leftJoinAndSelect('productCode.categoryId', 'category') // ✅ Add category relation
-      .leftJoinAndSelect('productCode.sizeId', 'size') // ✅ Add size relation
+      .leftJoinAndSelect('productCode.product', 'product')
       .orderBy('order.createdAt', 'DESC')
       .where('order.isDeleted = :isDeleted OR order.isDeleted IS NULL', {
         isDeleted: false,
@@ -490,9 +490,9 @@ export class OrdersService extends BaseResponse {
         'customer',
         'orderItems',
         'orderItems.productCode',
-        'orderItems.productCode.productId',
-        'orderItems.productCode.categoryId', // ✅ Add category relation
-        'orderItems.productCode.sizeId', // ✅ Add size relation
+        'orderItems.productCode.product',
+        'orderItems.productCode.category', // ✅ Add category relation
+        'orderItems.productCode.size', // ✅ Add size relation
         'orderItems.customerCatalog',
         'createdBy',
         'updatedBy',

@@ -79,9 +79,9 @@ export class DailyInventoryService extends BaseResponse {
     const queryBuilder = this.dailyInventoryRepo
       .createQueryBuilder('di')
       .leftJoinAndSelect('di.productCode', 'pc')
-      .leftJoinAndSelect('pc.productId', 'product')
-      .leftJoinAndSelect('pc.sizeId', 'size')
-      .leftJoinAndSelect('pc.categoryId', 'category')
+      .leftJoinAndSelect('pc.product', 'product')
+      .leftJoinAndSelect('pc.size', 'size')
+      .leftJoinAndSelect('pc.category', 'category')
       .where('di.businessDate = :businessDate', { businessDate: businessDate })
       .andWhere('di.deletedAt IS NULL');
 
@@ -132,9 +132,9 @@ export class DailyInventoryService extends BaseResponse {
       where: { id, deletedAt: IsNull() },
       relations: [
         'productCode',
-        'productCode.productId',
-        'productCode.sizeId',
-        'productCode.categoryId',
+        'productCode.product',
+        'productCode.size',
+        'productCode.category',
       ],
     });
 
@@ -160,9 +160,9 @@ export class DailyInventoryService extends BaseResponse {
       },
       relations: [
         'productCode',
-        'productCode.productId',
-        'productCode.sizeId',
-        'productCode.categoryId',
+        'productCode.product',
+        'productCode.size',
+        'productCode.category',
       ],
     });
 
@@ -190,9 +190,9 @@ export class DailyInventoryService extends BaseResponse {
       },
       relations: [
         'productCode',
-        'productCode.productId',
-        'productCode.sizeId',
-        'productCode.categoryId',
+        'productCode.product',
+        'productCode.size',
+        'productCode.category',
       ],
     });
 
@@ -344,8 +344,8 @@ export class DailyInventoryService extends BaseResponse {
     const items = await this.dailyInventoryRepo
       .createQueryBuilder('di')
       .leftJoinAndSelect('di.productCode', 'pc')
-      .leftJoinAndSelect('pc.productId', 'product')
-      .leftJoinAndSelect('pc.sizeId', 'size')
+      .leftJoinAndSelect('pc.product', 'product')
+      .leftJoinAndSelect('pc.size', 'size')
       .where('di.businessDate = :businessDate', { businessDate: targetDate })
       .andWhere('di.isActive = :isActive', { isActive: true })
       .andWhere('di.deletedAt IS NULL')
@@ -420,7 +420,7 @@ export class DailyInventoryService extends BaseResponse {
     const queryBuilder = this.snapshotsRepo
       .createQueryBuilder('snap')
       .leftJoinAndSelect('snap.productCode', 'pc')
-      .leftJoinAndSelect('pc.productId', 'product');
+      .leftJoinAndSelect('pc.product', 'product');
 
     // Filter by product
     if (productCodeId) {
@@ -556,9 +556,9 @@ export class DailyInventoryService extends BaseResponse {
     const inventoryRecords = await this.dailyInventoryRepo
       .createQueryBuilder('di')
       .leftJoinAndSelect('di.productCode', 'pc')
-      .leftJoinAndSelect('pc.productId', 'product')
-      .leftJoinAndSelect('pc.sizeId', 'size')
-      .leftJoinAndSelect('pc.categoryId', 'category')
+      .leftJoinAndSelect('pc.product', 'product')
+      .leftJoinAndSelect('pc.size', 'size')
+      .leftJoinAndSelect('pc.category', 'category')
       .where('di.businessDate = :businessDate', { businessDate: invoiceDate })
       .andWhere('di.productCodeId IN (:...productCodeIds)', { productCodeIds })
       .andWhere('di.deletedAt IS NULL')
@@ -628,9 +628,9 @@ export class DailyInventoryService extends BaseResponse {
       return {
         productCodeId: orderItem.productCodeId,
         productCode: inventory.productCode?.productCode || 'N/A',
-        productName: inventory.productCode?.productId?.name || 'Unknown',
-        size: inventory.productCode?.sizeId?.sizeValue || 'N/A',
-        category: inventory.productCode?.categoryId?.name || 'N/A',
+        productName: inventory.productCode?.product?.name || 'Unknown',
+        size: inventory.productCode?.size?.sizeValue || 'N/A',
+        category: inventory.productCode?.category?.name || 'N/A',
         requestedQuantity,
         availableStock: Number(inventory.stokAkhir) || 0,
         reservedStock: Number(inventory.dipesan) || 0,

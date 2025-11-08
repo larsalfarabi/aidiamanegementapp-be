@@ -8,8 +8,9 @@ import {
   OneToMany,
 } from 'typeorm';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
-import { InventoryTransactions } from './inventory_transactions.entity';
+
 import { Users } from '../../users/entities/users.entity';
+import { InventoryTransactions } from './inventory_transactions.entity';
 
 /**
  * Inventory Entity

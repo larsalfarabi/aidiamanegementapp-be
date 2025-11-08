@@ -189,7 +189,7 @@ export class InventoryTransactionService extends BaseResponse {
         DailyInventory,
         {
           where: { id: dailyInventory.id },
-          relations: ['productCode', 'productCode.productId'],
+          relations: ['productCode', 'productCode.product'],
         },
       );
 
@@ -360,7 +360,7 @@ export class InventoryTransactionService extends BaseResponse {
           DailyInventory,
           {
             where: { id: dailyInventory.id },
-            relations: ['productCode', 'productCode.productId'],
+            relations: ['productCode', 'productCode.product'],
           },
         );
 
@@ -512,7 +512,7 @@ export class InventoryTransactionService extends BaseResponse {
         DailyInventory,
         {
           where: { id: dailyInventory.id },
-          relations: ['productCode', 'productCode.productId'],
+          relations: ['productCode', 'productCode.product'],
         },
       );
 
@@ -766,11 +766,11 @@ export class InventoryTransactionService extends BaseResponse {
       const [updatedSource, updatedTarget] = await Promise.all([
         queryRunner.manager.findOne(DailyInventory, {
           where: { id: sourceInventory.id },
-          relations: ['productCode', 'productCode.productId'],
+          relations: ['productCode', 'productCode.product'],
         }),
         queryRunner.manager.findOne(DailyInventory, {
           where: { id: targetInventory.id },
-          relations: ['productCode', 'productCode.productId'],
+          relations: ['productCode', 'productCode.product'],
         }),
       ]);
 
@@ -949,7 +949,7 @@ export class InventoryTransactionService extends BaseResponse {
         DailyInventory,
         {
           where: { id: dailyInventory.id },
-          relations: ['productCode', 'productCode.productId'],
+          relations: ['productCode', 'productCode.product'],
         },
       );
 
@@ -1115,7 +1115,7 @@ export class InventoryTransactionService extends BaseResponse {
         // Reload inventory
         dailyInventory = await queryRunner.manager.findOne(DailyInventory, {
           where: { id: dailyInventory.id },
-          relations: ['productCode', 'productCode.productId'],
+          relations: ['productCode', 'productCode.product'],
         });
 
         transaction = savedTransaction;
@@ -1306,11 +1306,11 @@ export class InventoryTransactionService extends BaseResponse {
     const queryBuilder = this.repackingRepo
       .createQueryBuilder('repacking')
       .leftJoinAndSelect('repacking.sourceProductCode', 'sourceProduct')
-      .leftJoinAndSelect('sourceProduct.productId', 'sourceProductInfo')
-      .leftJoinAndSelect('sourceProduct.sizeId', 'sourceSize')
+      .leftJoinAndSelect('sourceProduct.product', 'sourceProductInfo')
+      .leftJoinAndSelect('sourceProduct.size', 'sourceSize')
       .leftJoinAndSelect('repacking.targetProductCode', 'targetProduct')
-      .leftJoinAndSelect('targetProduct.productId', 'targetProductInfo')
-      .leftJoinAndSelect('targetProduct.sizeId', 'targetSize')
+      .leftJoinAndSelect('targetProduct.product', 'targetProductInfo')
+      .leftJoinAndSelect('targetProduct.size', 'targetSize')
       .orderBy('repacking.repackingDate', 'DESC');
 
     // Filters
@@ -1361,11 +1361,11 @@ export class InventoryTransactionService extends BaseResponse {
       where: { id },
       relations: [
         'sourceProductCode',
-        'sourceProductCode.productId',
-        'sourceProductCode.sizeId',
+        'sourceProductCode.product',
+        'sourceProductCode.size',
         'targetProductCode',
-        'targetProductCode.productId',
-        'targetProductCode.sizeId',
+        'targetProductCode.product',
+        'targetProductCode.size',
       ],
     });
 
@@ -1376,7 +1376,7 @@ export class InventoryTransactionService extends BaseResponse {
     // Get associated transactions
     const transactions = await this.transactionsRepo.find({
       where: { repackingId: id },
-      relations: ['productCode', 'productCode.productId'],
+      relations: ['productCode', 'productCode.product'],
     });
 
     return this._success('Repacking record retrieved successfully', {
@@ -1396,9 +1396,9 @@ export class InventoryTransactionService extends BaseResponse {
     const queryBuilder = this.repackingRepo
       .createQueryBuilder('repacking')
       .leftJoinAndSelect('repacking.sourceProductCode', 'sourceProduct')
-      .leftJoinAndSelect('sourceProduct.productId', 'sourceProductInfo')
+      .leftJoinAndSelect('sourceProduct.product', 'sourceProductInfo')
       .leftJoinAndSelect('repacking.targetProductCode', 'targetProduct')
-      .leftJoinAndSelect('targetProduct.productId', 'targetProductInfo')
+      .leftJoinAndSelect('targetProduct.product', 'targetProductInfo')
       .orderBy('repacking.repackingDate', 'DESC');
 
     if (asSource) {
@@ -1436,8 +1436,8 @@ export class InventoryTransactionService extends BaseResponse {
     const queryBuilder = this.sampleTrackingRepo
       .createQueryBuilder('sample')
       .leftJoinAndSelect('sample.productCode', 'product')
-      .leftJoinAndSelect('product.productId', 'productInfo')
-      .leftJoinAndSelect('product.sizeId', 'size')
+      .leftJoinAndSelect('product.product', 'productInfo')
+      .leftJoinAndSelect('product.size', 'size')
       .orderBy('sample.sampleDate', 'DESC');
 
     // Filters
@@ -1486,8 +1486,8 @@ export class InventoryTransactionService extends BaseResponse {
       where: { id },
       relations: [
         'productCode',
-        'productCode.productId',
-        'productCode.sizeId',
+        'productCode.product',
+        'productCode.size',
         'order',
       ],
     });
@@ -1518,7 +1518,7 @@ export class InventoryTransactionService extends BaseResponse {
   async getActiveSamples(): Promise<ResponseSuccess> {
     const samples = await this.sampleTrackingRepo.find({
       where: { status: SampleStatus.DISTRIBUTED },
-      relations: ['productCode', 'productCode.productId', 'productCode.sizeId'],
+      relations: ['productCode', 'productCode.product', 'productCode.size'],
       order: { sampleDate: 'DESC' },
     });
 
@@ -1535,7 +1535,7 @@ export class InventoryTransactionService extends BaseResponse {
     const samples = await this.sampleTrackingRepo
       .createQueryBuilder('sample')
       .leftJoinAndSelect('sample.productCode', 'product')
-      .leftJoinAndSelect('product.productId', 'productInfo')
+      .leftJoinAndSelect('product.product', 'productInfo')
       .where('sample.status = :status', { status: SampleStatus.DISTRIBUTED })
       .andWhere('sample.followUpDate IS NOT NULL')
       .andWhere('sample.followUpDate <= :today', { today })
@@ -1555,7 +1555,7 @@ export class InventoryTransactionService extends BaseResponse {
   async getSamplesByProduct(productCodeId: number): Promise<ResponseSuccess> {
     const samples = await this.sampleTrackingRepo.find({
       where: { productCodeId },
-      relations: ['productCode', 'productCode.productId'],
+      relations: ['productCode', 'productCode.product'],
       order: { sampleDate: 'DESC' },
       take: 50,
     });

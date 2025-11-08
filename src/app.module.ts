@@ -17,6 +17,7 @@ import { OrdersModule } from './modules/orders/orders.module';
 import { createKeyv } from '@keyv/redis';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { ReportsModule } from './modules/reports/reports.module';
+import { MailModule } from './modules/mail/mail.module';
 
 @Module({
   imports: [
@@ -53,6 +54,7 @@ import { ReportsModule } from './modules/reports/reports.module';
     OrdersModule,
     InventoryModule,
     ReportsModule,
+    MailModule,
   ],
   controllers: [AppController],
   providers: [AppService],

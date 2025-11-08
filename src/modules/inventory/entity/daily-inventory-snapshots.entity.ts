@@ -8,6 +8,7 @@ import {
   CreateDateColumn,
 } from 'typeorm';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
+import { BaseEntity } from '../../../common/entities/base.entity';
 
 /**
  * DailyInventorySnapshots Entity
@@ -41,7 +42,7 @@ export class DailyInventorySnapshots {
 
   @Column({
     type: 'time',
-    default: () => 'CURRENT_TIME',
+    nullable: true,
     comment: 'Time when snapshot was taken (typically 00:00:00)',
   })
   snapshotTime: string;
@@ -111,8 +112,7 @@ export class DailyInventorySnapshots {
   // Metadata
   @CreateDateColumn({
     type: 'timestamp',
-    default: () => 'CURRENT_TIMESTAMP',
-    comment: 'When this snapshot record was created',
+    default: () => 'CURRENT_TIMESTAMP(6)',
   })
   createdAt: Date;
 

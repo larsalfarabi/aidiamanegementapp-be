@@ -93,7 +93,7 @@ export class InventoryService extends BaseResponse {
     const queryBuilder = this.inventoryRepo
       .createQueryBuilder('inv')
       .leftJoinAndSelect('inv.productCode', 'pc')
-      .leftJoinAndSelect('pc.productId', 'product')
+      .leftJoinAndSelect('pc.product', 'product')
       .leftJoinAndSelect('pc.sizeId', 'size')
       .leftJoinAndSelect('pc.categoryId', 'category')
       .select([
@@ -187,7 +187,7 @@ export class InventoryService extends BaseResponse {
   async findById(id: number): Promise<ResponseSuccess> {
     const inventory = await this.inventoryRepo.findOne({
       where: { id },
-      relations: ['productCode', 'productCode.productId', 'productCode.sizeId'],
+      relations: ['productCode', 'productCode.product', 'productCode.sizeId'],
     });
 
     if (!inventory) {
@@ -281,7 +281,7 @@ export class InventoryService extends BaseResponse {
     const lowStockItems = await this.inventoryRepo
       .createQueryBuilder('inv')
       .leftJoinAndSelect('inv.productCode', 'pc')
-      .leftJoinAndSelect('pc.productId', 'product')
+      .leftJoinAndSelect('pc.product', 'product')
       .leftJoinAndSelect('pc.sizeId', 'size')
       .where('inv.quantityAvailable <= inv.minimumStock')
       .andWhere('inv.minimumStock IS NOT NULL')
@@ -302,7 +302,7 @@ export class InventoryService extends BaseResponse {
     const balance = await this.inventoryRepo
       .createQueryBuilder('inv')
       .leftJoinAndSelect('inv.productCode', 'pc')
-      .leftJoinAndSelect('pc.productId', 'product')
+      .leftJoinAndSelect('pc.product', 'product')
       .select([
         'SUM(inv.quantityOnHand) as totalOnHand',
         'SUM(inv.quantityReserved) as totalReserved',
@@ -524,7 +524,7 @@ export class InventoryService extends BaseResponse {
     const queryBuilder = this.transactionRepo
       .createQueryBuilder('trx')
       .leftJoinAndSelect('trx.productCode', 'pc')
-      .leftJoinAndSelect('pc.productId', 'product')
+      .leftJoinAndSelect('pc.product', 'product')
       .leftJoinAndSelect('trx.order', 'order')
       .orderBy('trx.transactionDate', 'DESC');
 
@@ -745,7 +745,7 @@ export class InventoryService extends BaseResponse {
     const inventoryQuery = this.inventoryRepo
       .createQueryBuilder('inv')
       .leftJoinAndSelect('inv.productCode', 'pc')
-      .leftJoinAndSelect('pc.productId', 'product')
+      .leftJoinAndSelect('pc.product', 'product')
       .leftJoinAndSelect('pc.sizeId', 'size')
       .leftJoinAndSelect('pc.categoryId', 'category')
       .select([
@@ -847,10 +847,10 @@ export class InventoryService extends BaseResponse {
           id: inv.id,
           productCodeId: inv.productCodeId,
           productCode: inv.productCode?.productCode || '',
-          productName: inv.productCode?.productId?.name || '',
-          productType: inv.productCode?.productId?.productType || '',
-          categoryName: inv.productCode?.categoryId?.name || '',
-          sizeValue: inv.productCode?.sizeId?.sizeValue || '',
+          productName: inv.productCode?.product?.name || '',
+          productType: inv.productCode?.product?.productType || '',
+          categoryName: inv.productCode?.category?.name || '',
+          sizeValue: inv.productCode?.size?.sizeValue || '',
 
           // Daily metrics
           openingStock, // Stok Awal

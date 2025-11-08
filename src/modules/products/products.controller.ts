@@ -23,6 +23,7 @@ import {
 } from './dto/products.dto';
 // import { CacheInterceptor, CacheKey, CacheTTL } from '@nestjs/cache-manager';
 import { InjectDeletedBy } from '../../common/decorator/inject-deletedBy.decorator';
+import { ProductCodeQueryDto } from './dto/products.dto';
 
 @UseGuards(JwtGuard)
 @Controller('products')
@@ -31,7 +32,7 @@ export class ProductsController {
 
   // * --- PRODUCT CODES --- */
   @Get()
-  async findAll(@Pagination() query: PaginationDto) {
+  async findAll(@Pagination() query: ProductCodeQueryDto) {
     return this.productsService.findAll(query);
   }
 
@@ -81,9 +82,29 @@ export class ProductsController {
     return this.productsService.findAllProductCategories(query);
   }
 
+  // ✅ NEW: Get main categories only
+  @Get('categories/main')
+  async findMainCategories() {
+    return this.productsService.findMainCategories();
+  }
+
+  // ✅ NEW: Get sub-categories by parent ID
+  @Get('categories/:parentId/sub-categories')
+  async findSubCategoriesByParent(@Param('parentId') parentId: string) {
+    return this.productsService.findSubCategoriesByParent(+parentId);
+  }
+
+  // ✅ NEW: Get category hierarchy
+  @Get('categories/hierarchy')
+  async findCategoryHierarchy() {
+    return this.productsService.findCategoryHierarchy();
+  }
+
   // * --- PRODUCT SIZES --- */
   @Get('sizes/all')
-  async findAllProductSizes(@Pagination() query: PaginationDto) {
+  async findAllProductSizes(
+    @Pagination() query: import('./dto/products.dto').ProductSizeQueryDto,
+  ) {
     return this.productsService.findAllProductSizes(query);
   }
 }

@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ConflictException,
   Inject,
+  BadRequestException,
 } from '@nestjs/common';
 import { ProductCodes } from './entity/product_codes.entity';
 import { Repository } from 'typeorm';
@@ -22,6 +23,7 @@ import { Pagination } from '../../common/decorator/pagination.decorator';
 import { Products } from './entity/products.entity';
 import { ProductSizes } from './entity/product_sizes.entity';
 import { ProductCategories } from './entity/product_categories.entity';
+import { ProductCodeQueryDto } from './dto/products.dto';
 
 @Injectable()
 export class ProductsService extends BaseResponse {
@@ -40,27 +42,52 @@ export class ProductsService extends BaseResponse {
   }
 
   // * --- PRODUCT CODES --- */
-  async findAll(query: PaginationDto): Promise<ResponsePagination> {
-    const { pageSize, limit, page } = query;
+  async findAll(query: ProductCodeQueryDto): Promise<ResponsePagination> {
+    const { pageSize, limit, page, mainCategory, subCategoryId, size } =
+      query;
 
+    // ✅ UPDATED: Menggunakan relasi baru (product, category, size)
     const queryBuilder = this.productCodeRepo
       .createQueryBuilder('pc')
-      .select([
-        'pc.id',
-        'pc.productCode',
-        'products.name',
-        'products.productType',
-        'product_categories.name',
-        'product_sizes.sizeValue',
-      ])
-      .leftJoin('pc.productId', 'products')
-      .leftJoin('pc.categoryId', 'product_categories')
-      .leftJoin('pc.sizeId', 'product_sizes')
+      .leftJoin('pc.product', 'products')
+      .leftJoin('products.category', 'mainCategory')
+      .leftJoin('pc.category', 'subCategory')
+      .leftJoin('pc.size', 'productSizes')
       .where('pc.isDeleted = :isDeleted', {
         isDeleted: false,
       })
+      .select([
+        'pc',
+        'products.id',
+        'products.name',
+        'products.productType',
+        'mainCategory.id',
+        'mainCategory.name',
+        'subCategory.id',
+        'subCategory.name',
+        'productSizes.id',
+        'productSizes.sizeValue',
+      ])
       .take(pageSize)
       .skip(limit);
+
+    if (mainCategory) {
+      queryBuilder.andWhere('mainCategory.name = :mainCategory', {
+        mainCategory: mainCategory,
+      });
+    }
+
+    if (subCategoryId) {
+      queryBuilder.andWhere('subCategory.id = :subCategoryId', {
+        subCategoryId: subCategoryId,
+      });
+    }
+
+    if (size) {
+      queryBuilder.andWhere('productSizes.id = :size', {
+        size: size,
+      });
+    }
 
     const [result, count] = await queryBuilder.getManyAndCount();
 
@@ -74,6 +101,7 @@ export class ProductsService extends BaseResponse {
   }
 
   async findById(id: number) {
+    // ✅ UPDATED: Menggunakan relasi baru dengan main category dari Products
     const queryBuilder = this.productCodeRepo
       .createQueryBuilder('pc')
       .select([
@@ -87,21 +115,27 @@ export class ProductsService extends BaseResponse {
         'products.productType',
         'products.imageUrl',
         'products.isActive',
-        'product_categories.id',
-        'product_categories.name',
-        'product_categories.description',
-        'product_sizes.id',
-        'product_sizes.sizeValue',
-        'product_sizes.unitOfMeasure',
-        'product_sizes.volumeMili',
+        'mainCategory.id', // ✅ Main category dari Products table
+        'mainCategory.name',
+        'mainCategory.description',
+        'productCategories.id', // Sub-category dari ProductCodes table
+        'productCategories.name',
+        'productCategories.description',
+        'productSizes.id',
+        'productSizes.sizeValue',
+        'productSizes.unitOfMeasure',
+        'productSizes.baseValue',
+        'productSizes.baseUnit',
+        'productSizes.categoryType',
         'created_user.id',
         'created_user.firstName',
         'updated_user.id',
         'updated_user.firstName',
       ])
-      .leftJoin('pc.productId', 'products')
-      .leftJoin('pc.categoryId', 'product_categories')
-      .leftJoin('pc.sizeId', 'product_sizes')
+      .leftJoin('pc.product', 'products')
+      .leftJoin('products.category', 'mainCategory') // ✅ Join main category
+      .leftJoin('pc.category', 'productCategories') // Sub-category
+      .leftJoin('pc.size', 'productSizes')
       .leftJoin('pc.createdBy', 'created_user')
       .leftJoin('pc.updatedBy', 'updated_user')
       .where('pc.id = :id AND pc.isDeleted = :isDeleted', {
@@ -128,13 +162,12 @@ export class ProductsService extends BaseResponse {
       throw new ConflictException('Product code sudah ada');
     }
 
-    // ✅ FIXED: TypeORM save with relation IDs using simplified syntax
-    // When saving, we can use { id } shorthand for relations
+    // ✅ UPDATED: Menggunakan relasi baru (product, category, size)
     await this.productCodeRepo.save({
       ...payload,
-      productId: { id: payload.productId } as any,
-      categoryId: { id: payload.categoryId } as any,
-      sizeId: { id: payload.sizeId } as any,
+      product: { id: payload.product } as any,
+      category: { id: payload.category } as any,
+      size: { id: payload.size } as any,
     });
 
     return this._success('Berhasil membuat product code');
@@ -153,18 +186,17 @@ export class ProductsService extends BaseResponse {
       );
     }
 
-    // ✅ FIXED: TypeORM update with relation IDs
-    // Prepare update payload with proper relation format
+    // ✅ UPDATED: Menggunakan relasi baru (product, category, size)
     const updatePayload: any = { ...payload };
 
-    if (payload.productId !== undefined) {
-      updatePayload.productId = { id: payload.productId };
+    if (payload.product !== undefined) {
+      updatePayload.product = { id: payload.product };
     }
-    if (payload.categoryId !== undefined) {
-      updatePayload.categoryId = { id: payload.categoryId };
+    if (payload.category !== undefined) {
+      updatePayload.category = { id: payload.category };
     }
-    if (payload.sizeId !== undefined) {
-      updatePayload.sizeId = { id: payload.sizeId };
+    if (payload.size !== undefined) {
+      updatePayload.size = { id: payload.size };
     }
 
     await this.productCodeRepo.update(id, updatePayload);
@@ -207,16 +239,63 @@ export class ProductsService extends BaseResponse {
   async checkOrCreateProduct(
     payload: import('./dto/products.dto').CheckOrCreateProductDto,
   ): Promise<ResponseSuccess> {
-    // Check if product with same name and type already exists
-    const existingProduct = await this.productRepo.findOne({
-      where: {
-        name: payload.name,
-        productType: payload.productType,
-      },
-      select: ['id', 'name', 'productType', 'imageUrl', 'isActive'],
+    // Business validation: productType required for Finished Goods (Jadi), optional for others
+    if (!payload.category) {
+      throw new ConflictException('category wajib diisi');
+    }
+
+    // ✅ IMPROVED: Dynamic category check with parent lookup
+    const category = await this.productCategoryRepo.findOne({
+      where: { id: payload.category },
+      select: ['id', 'name', 'level', 'parentId'],
+      relations: ['parent'],
     });
 
-    // If exists, return existing product
+    if (!category) {
+      throw new ConflictException(
+        `Kategori dengan ID ${payload.category} tidak ditemukan`,
+      );
+    }
+
+    // ✅ CRITICAL FIX: Determine main category ID and name
+    // Products.category should ALWAYS point to main category (level 0)
+    // Sub-category relationship is stored in ProductCodes.category
+    let mainCategoryId: number;
+    let mainCategoryName: string;
+
+    if (category.level > 0 && category.parent) {
+      // This is a sub-category - use parent (main category)
+      mainCategoryId = category.parent.id;
+      mainCategoryName = category.parent.name.toUpperCase();
+    } else {
+      // This is already a main category
+      mainCategoryId = category.id;
+      mainCategoryName = category.name.toUpperCase();
+    }
+
+    // Validate productType requirement based on main category
+    const requiresProductType = mainCategoryName === 'BARANG JADI';
+
+    if (requiresProductType && !payload.productType) {
+      throw new ConflictException(
+        'productType wajib diisi untuk kategori Barang Jadi',
+      );
+    }
+
+    // ✅ FIXED: Query using MAIN category ID, not sub-category
+    const whereClause: any = {
+      name: payload.name,
+      category: { id: mainCategoryId }, // Use main category ID
+    };
+    if (payload.productType !== undefined) {
+      whereClause.productType = payload.productType;
+    }
+    const existingProduct = await this.productRepo.findOne({
+      where: whereClause,
+      select: ['id', 'name', 'productType', 'imageUrl', 'isActive'],
+      relations: ['category'],
+    });
+
     if (existingProduct) {
       return this._success(
         'Product sudah ada, menggunakan product yang sudah ada',
@@ -224,10 +303,11 @@ export class ProductsService extends BaseResponse {
       );
     }
 
-    // If not exists, create new product
+    // ✅ FIXED: Create new product with MAIN category ID
     const newProduct = await this.productRepo.save({
       name: payload.name,
-      productType: payload.productType,
+      productType: payload.productType ?? null,
+      category: { id: mainCategoryId }, // Use main category ID
       isActive: true,
       createdBy: payload.createdBy,
     });
@@ -248,9 +328,17 @@ export class ProductsService extends BaseResponse {
   ): Promise<ResponsePagination> {
     const { pageSize, limit, page } = query;
     const [result, count] = await this.productCategoryRepo.findAndCount({
-      select: ['id', 'name', 'description'],
+      select: [
+        'id',
+        'name',
+        'description',
+        'parentId',
+        'level',
+        'categoryType',
+      ],
       take: pageSize,
       skip: limit,
+      order: { level: 'ASC', name: 'ASC' },
     });
 
     return this._pagination(
@@ -262,14 +350,103 @@ export class ProductsService extends BaseResponse {
     );
   }
 
-  // * --- PRODUCT SIZES --- */
-  async findAllProductSizes(query: PaginationDto): Promise<ResponsePagination> {
-    const { pageSize, limit, page } = query;
-    const [result, count] = await this.productSizeRepo.findAndCount({
-      select: ['id', 'sizeValue', 'unitOfMeasure', 'volumeMili'],
-      take: pageSize,
-      skip: limit,
+  /**
+   * ✅ NEW: Get main categories only (level 0)
+   */
+  async findMainCategories(): Promise<ResponseSuccess> {
+    const result = await this.productCategoryRepo.find({
+      where: { level: 0, isActive: true },
+      select: ['id', 'name', 'description'],
+      order: { name: 'ASC' },
     });
+
+    return this._success('Berhasil mengambil main categories', result);
+  }
+
+  /**
+   * ✅ NEW: Get sub-categories by parent ID
+   */
+  async findSubCategoriesByParent(parentId: number): Promise<ResponseSuccess> {
+    const parent = await this.productCategoryRepo.findOne({
+      where: { id: parentId },
+    });
+
+    if (!parent) {
+      throw new NotFoundException(
+        `Parent category dengan ID ${parentId} tidak ditemukan`,
+      );
+    }
+
+    const result = await this.productCategoryRepo.find({
+      where: { parentId, isActive: true },
+      select: ['id', 'name', 'description', 'level'],
+      order: { name: 'ASC' },
+    });
+
+    return this._success(
+      `Berhasil mengambil sub-categories dari ${parent.name}`,
+      result,
+    );
+  }
+
+  /**
+   * ✅ NEW: Get category hierarchy (with children)
+   */
+  async findCategoryHierarchy(): Promise<ResponseSuccess> {
+    const mainCategories = await this.productCategoryRepo.find({
+      where: { level: 0, isActive: true },
+      select: ['id', 'name', 'description', 'level'],
+      order: { name: 'ASC' },
+    });
+
+    // Load children for each main category
+    const hierarchyData = await Promise.all(
+      mainCategories.map(async (mainCat) => {
+        const subCategories = await this.productCategoryRepo.find({
+          where: { parentId: mainCat.id, isActive: true },
+          select: ['id', 'name', 'description', 'level'],
+          order: { name: 'ASC' },
+        });
+
+        return {
+          ...mainCat,
+          children: subCategories,
+        };
+      }),
+    );
+
+    return this._success(
+      'Berhasil mengambil category hierarchy',
+      hierarchyData,
+    );
+  }
+
+  // * --- PRODUCT SIZES --- */
+  async findAllProductSizes(
+    query: import('./dto/products.dto').ProductSizeQueryDto,
+  ): Promise<ResponsePagination> {
+    const { pageSize, limit, page, categoryType } = query;
+
+    const queryBuilder = this.productSizeRepo
+      .createQueryBuilder('ps')
+      .select([
+        'ps.id',
+        'ps.sizeValue',
+        'ps.unitOfMeasure',
+        'ps.baseValue',
+        'ps.baseUnit',
+        'ps.categoryType',
+      ])
+      .orderBy('ps.sizeValue', 'ASC')
+      .take(pageSize)
+      .skip(limit);
+
+    // ✅ Filter by categoryType if provided
+    if (categoryType) {
+      queryBuilder.where('ps.categoryType = :categoryType', { categoryType });
+    }
+
+    const [result, count] = await queryBuilder.getManyAndCount();
 
     return this._pagination(
       'Berhasil mengambil data product sizes',

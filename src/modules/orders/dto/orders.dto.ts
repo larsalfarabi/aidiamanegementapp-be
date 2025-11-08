@@ -90,6 +90,7 @@ export class CreateOrderDto extends PickType(OrderDto, [
   'orderItems',
   'internalNotes',
   'customerNotes',
+  'customerNotes',
   'createdBy',
 ]) {}
 

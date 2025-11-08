@@ -6,6 +6,7 @@ import { Products } from './entity/products.entity';
 import { ProductCategories } from './entity/product_categories.entity';
 import { ProductSizes } from './entity/product_sizes.entity';
 import { ProductCodes } from './entity/product_codes.entity';
+import { CategoryHierarchyService } from './services/category-hierarchy.service';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { ProductCodes } from './entity/product_codes.entity';
     ]),
   ],
   controllers: [ProductsController],
-  providers: [ProductsService],
+  providers: [ProductsService, CategoryHierarchyService],
+  exports: [CategoryHierarchyService],
 })
 export class ProductsModule {}

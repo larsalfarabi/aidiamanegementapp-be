@@ -14,6 +14,7 @@ import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { Users } from '../../users/entities/users.entity';
 import { Orders } from '../../orders/entity/orders.entity';
 import { InventoryTransactions } from './inventory-transactions.entity';
+import { BaseEntity } from '../../../common/entities/base.entity';
 
 /**
  * Sample Purpose Types
@@ -72,10 +73,7 @@ export enum SampleStatus {
 @Index(['status']) // For status filtering
 @Index(['convertedToSale']) // For conversion tracking
 @Index(['followUpDate']) // For follow-up reminders
-export class SampleTracking {
-  @PrimaryGeneratedColumn('increment')
-  id: number;
-
+export class SampleTracking extends BaseEntity {
   // Sample Info
   @Column({
     unique: true,
@@ -233,36 +231,23 @@ export class SampleTracking {
   @JoinColumn({ name: 'outTransactionId' })
   outTransaction: InventoryTransactions;
 
-  // Audit Fields
-  @CreateDateColumn({
-    type: 'timestamp',
-    default: () => 'CURRENT_TIMESTAMP',
-  })
-  createdAt: Date;
-
-  @UpdateDateColumn({
-    type: 'timestamp',
-    default: () => 'CURRENT_TIMESTAMP',
-    onUpdate: 'CURRENT_TIMESTAMP',
-  })
-  updatedAt: Date;
-
-  @DeleteDateColumn({ type: 'timestamp', nullable: true })
-  deletedAt: Date;
-
-  @Column({ nullable: true })
+  // User Tracking
+  @Column({ nullable: true, comment: 'User ID who created this record' })
   createdBy: number;
-
-  @Column({ nullable: true })
-  updatedBy: number;
 
   @ManyToOne(() => Users, { nullable: true })
   @JoinColumn({ name: 'createdBy' })
   creator: Users;
 
+  @Column({ nullable: true, comment: 'User ID who last updated this record' })
+  updatedBy: number;
+
   @ManyToOne(() => Users, { nullable: true })
   @JoinColumn({ name: 'updatedBy' })
   updater: Users;
+
+  @DeleteDateColumn({ type: 'timestamp', nullable: true })
+  deletedAt: Date;
 
   /**
    * Virtual Property: Is Overdue for Follow-up

@@ -13,6 +13,7 @@ import {
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { Users } from '../../users/entities/users.entity';
 import { InventoryTransactions } from './inventory-transactions.entity';
+import { BaseEntity } from '../../../common/entities/base.entity';
 
 /**
  * Repacking Status
@@ -49,10 +50,7 @@ export enum RepackingStatus {
 @Index(['sourceProductCodeId']) // For source product tracking
 @Index(['targetProductCodeId']) // For target product tracking
 @Index(['status']) // For status filtering
-export class RepackingRecords {
-  @PrimaryGeneratedColumn('increment')
-  id: number;
-
+export class RepackingRecords extends BaseEntity {
   // Repacking Info
   @Column({
     unique: true,
@@ -194,36 +192,23 @@ export class RepackingRecords {
   @JoinColumn({ name: 'targetTransactionId' })
   targetTransaction: InventoryTransactions;
 
-  // Audit Fields
-  @CreateDateColumn({
-    type: 'timestamp',
-    default: () => 'CURRENT_TIMESTAMP',
-  })
-  createdAt: Date;
-
-  @UpdateDateColumn({
-    type: 'timestamp',
-    default: () => 'CURRENT_TIMESTAMP',
-    onUpdate: 'CURRENT_TIMESTAMP',
-  })
-  updatedAt: Date;
-
-  @DeleteDateColumn({ type: 'timestamp', nullable: true })
-  deletedAt: Date;
-
-  @Column({ nullable: true })
+  // User Tracking
+  @Column({ nullable: true, comment: 'User ID who created this record' })
   createdBy: number;
-
-  @Column({ nullable: true })
-  updatedBy: number;
 
   @ManyToOne(() => Users, { nullable: true })
   @JoinColumn({ name: 'createdBy' })
   creator: Users;
 
+  @Column({ nullable: true, comment: 'User ID who last updated this record' })
+  updatedBy: number;
+
   @ManyToOne(() => Users, { nullable: true })
   @JoinColumn({ name: 'updatedBy' })
   updater: Users;
+
+  @DeleteDateColumn({ type: 'timestamp', nullable: true })
+  deletedAt: Date;
 
   /**
    * Virtual Property: Conversion Efficiency

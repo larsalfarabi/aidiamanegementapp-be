@@ -10,18 +10,19 @@ export class ProductCodes extends BaseEntity {
   @Column({ unique: true, length: 50 })
   productCode: string;
 
-  // ✅ FIXED: Proper relation type (not number, but entity type)
   @ManyToOne(() => Products)
   @JoinColumn({ name: 'productId' })
-  productId: Products;
+  product: Products;
 
+  // ✅ RENAMED & SIMPLIFIED: subCategoryId → category
+  // Relasi ke Sub-Category (level 1) atau category lainnya dari product_categories
   @ManyToOne(() => ProductCategories)
   @JoinColumn({ name: 'categoryId' })
-  categoryId: ProductCategories;
+  category: ProductCategories;
 
-  @ManyToOne(() => ProductSizes)
+  @ManyToOne(() => ProductSizes, { nullable: true })
   @JoinColumn({ name: 'sizeId' })
-  sizeId: ProductSizes;
+  size: ProductSizes | null;
 
   @Column({ default: true })
   isActive: boolean;
@@ -37,7 +38,7 @@ export class ProductCodes extends BaseEntity {
   @JoinColumn({ name: 'updatedBy' })
   updatedBy: Users;
 
-  @ManyToOne(() => Users)
+  @ManyToOne(() => Users, { nullable: true })
   @JoinColumn({ name: 'deletedBy' })
   deletedBy: Users;
 }
