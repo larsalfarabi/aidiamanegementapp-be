@@ -26,7 +26,6 @@
     "migration:show": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli.js migration:show -d ./src/config/typeorm.config.ts"
   },
   "dependencies": {
-    "@keyv/redis": "^5.1.2",
     "@nestjs-modules/mailer": "^2.0.2",
     "@nestjs/bull": "^11.0.4",
     "@nestjs/cache-manager": "^3.0.1",
@@ -50,6 +49,7 @@
     "bcryptjs": "^3.0.2",
     "bull": "^4.16.5",
     "cache-manager": "^7.2.2",
+    "cache-manager-redis-yet": "^5.1.5",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
     "compression": "^1.8.1",

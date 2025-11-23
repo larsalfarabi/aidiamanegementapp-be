@@ -5,6 +5,7 @@ import {
   Inject,
   BadRequestException,
 } from '@nestjs/common';
+import { Not } from 'typeorm';
 import { ProductCodes } from './entity/product_codes.entity';
 import { Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -23,7 +24,7 @@ import { Pagination } from '../../common/decorator/pagination.decorator';
 import { Products } from './entity/products.entity';
 import { ProductSizes } from './entity/product_sizes.entity';
 import { ProductCategories } from './entity/product_categories.entity';
-import { ProductCodeQueryDto } from './dto/products.dto';
+import { ProductCodeQueryDto, QueryProductDto } from './dto/products.dto';
 
 @Injectable()
 export class ProductsService extends BaseResponse {
@@ -43,8 +44,7 @@ export class ProductsService extends BaseResponse {
 
   // * --- PRODUCT CODES --- */
   async findAll(query: ProductCodeQueryDto): Promise<ResponsePagination> {
-    const { pageSize, limit, page, mainCategory, subCategoryId, size } =
-      query;
+    const { pageSize, limit, page, mainCategory, subCategoryId, size } = query;
 
     // ✅ UPDATED: Menggunakan relasi baru (product, category, size)
     const queryBuilder = this.productCodeRepo
@@ -67,6 +67,7 @@ export class ProductsService extends BaseResponse {
         'subCategory.name',
         'productSizes.id',
         'productSizes.sizeValue',
+        'productSizes.unitOfMeasure',
       ])
       .take(pageSize)
       .skip(limit);
@@ -186,6 +187,13 @@ export class ProductsService extends BaseResponse {
       );
     }
 
+    const validateProductCode = await this.productCodeRepo.findOne({
+      where: { productCode: payload.productCode, id: id },
+    });
+    if (!validateProductCode) {
+      throw new ConflictException('Kode barang sudah pernah digunakan');
+    }
+
     // ✅ UPDATED: Menggunakan relasi baru (product, category, size)
     const updatePayload: any = { ...payload };
 
@@ -218,10 +226,16 @@ export class ProductsService extends BaseResponse {
   }
 
   // * --- PRODUCTS --- */
-  async findAllProducts(query: PaginationDto): Promise<ResponsePagination> {
-    const { pageSize, limit, page } = query;
+  async findAllProducts(query: QueryProductDto): Promise<ResponsePagination> {
+    const { pageSize, limit, page, mainCategory } = query;
     const [result, count] = await this.productRepo.findAndCount({
+      where: {
+        category: {
+          name: mainCategory,
+        },
+      },
       select: ['id', 'name', 'productType', 'imageUrl', 'isActive'],
+      relations: ['category'],
       // take: pageSize,
       // skip: limit,
     });

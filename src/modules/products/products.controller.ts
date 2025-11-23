@@ -20,10 +20,11 @@ import {
   DeleteProductCodeDto,
   UpdateProductCodeDto,
   CheckOrCreateProductDto,
+  ProductCodeQueryDto,
+  QueryProductDto,
 } from './dto/products.dto';
 // import { CacheInterceptor, CacheKey, CacheTTL } from '@nestjs/cache-manager';
 import { InjectDeletedBy } from '../../common/decorator/inject-deletedBy.decorator';
-import { ProductCodeQueryDto } from './dto/products.dto';
 
 @UseGuards(JwtGuard)
 @Controller('products')
@@ -64,7 +65,7 @@ export class ProductsController {
 
   // * --- PRODUCTS --- */
   @Get('items/all')
-  async findAllProducts(@Pagination() query: PaginationDto) {
+  async findAllProducts(@Pagination() query: QueryProductDto) {
     return this.productsService.findAllProducts(query);
   }
 

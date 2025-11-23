@@ -517,6 +517,7 @@ export class InventoryService extends BaseResponse {
       endDate,
       orderId,
       productionBatchNumber,
+      mainCategory,
       page = 1,
       limit = 10,
     } = query;
@@ -525,6 +526,8 @@ export class InventoryService extends BaseResponse {
       .createQueryBuilder('trx')
       .leftJoinAndSelect('trx.productCode', 'pc')
       .leftJoinAndSelect('pc.product', 'product')
+      .leftJoinAndSelect('pc.category', 'category')
+      .leftJoin('category.parent', 'mainCat')
       .leftJoinAndSelect('trx.order', 'order')
       .orderBy('trx.transactionDate', 'DESC');
 
@@ -558,6 +561,14 @@ export class InventoryService extends BaseResponse {
       queryBuilder.andWhere('trx.productionBatchNumber = :batchNumber', {
         batchNumber: productionBatchNumber,
       });
+    }
+
+    // Filter by main category
+    if (mainCategory) {
+      queryBuilder.andWhere(
+        '(mainCat.name = :mainCategory OR (category.level = 0 AND category.name = :mainCategory))',
+        { mainCategory },
+      );
     }
 
     queryBuilder.skip((page - 1) * limit).take(limit);

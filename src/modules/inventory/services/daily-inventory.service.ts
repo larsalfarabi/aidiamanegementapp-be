@@ -72,6 +72,7 @@ export class DailyInventoryService extends BaseResponse {
       productCodeId,
       stockStatus,
       isActive,
+      mainCategory,
       page = 1,
       pageSize = 10,
     } = query;
@@ -82,6 +83,7 @@ export class DailyInventoryService extends BaseResponse {
       .leftJoinAndSelect('pc.product', 'product')
       .leftJoinAndSelect('pc.size', 'size')
       .leftJoinAndSelect('pc.category', 'category')
+      .leftJoin('product.category', 'mainCat') // Join parent category to get main category
       .where('di.businessDate = :businessDate', { businessDate: businessDate })
       .andWhere('di.deletedAt IS NULL');
 
@@ -95,6 +97,14 @@ export class DailyInventoryService extends BaseResponse {
     // Filter by isActive
     if (isActive !== undefined) {
       queryBuilder.andWhere('di.isActive = :isActive', { isActive });
+    }
+
+    // Filter by main category
+    if (mainCategory) {
+      queryBuilder.andWhere(
+        '(mainCat.name = :mainCategory OR (category.level = 0 AND category.name = :mainCategory))',
+        { mainCategory },
+      );
     }
 
     // Get total count

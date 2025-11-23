@@ -42,4 +42,8 @@ export class FilterTransactionsDto {
   @IsNumber()
   @Type(() => Number)
   limit?: number;
+
+  @IsOptional()
+  @IsString()
+  mainCategory?: string; // Filter by main category name (e.g., 'Barang Jadi', 'Bahan Baku', 'Bahan Pembantu', 'Bahan Kemasan')
 }

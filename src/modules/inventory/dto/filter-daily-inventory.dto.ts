@@ -12,6 +12,7 @@ import { PaginationDto } from '../../../common/dto/pagination.dto';
  * - GET /inventory/daily?productCodeId=5                      → Specific product, today
  * - GET /inventory/daily?businessDate=2025-10-12&page=1       → Pagination
  * - GET /inventory/daily?stockStatus=LOW_STOCK                → Filter by status
+ * - GET /inventory/daily?mainCategory=Barang Jadi             → Filter by main category
  */
 export class FilterDailyInventoryDto extends PaginationDto {
   @IsOptional()
@@ -28,4 +29,7 @@ export class FilterDailyInventoryDto extends PaginationDto {
 
   @IsOptional()
   isActive?: boolean; // Filter only active products (default: true)
+
+  @IsOptional()
+  mainCategory?: string; // Filter by main category name (e.g., 'Barang Jadi', 'Bahan Baku', 'Bahan Pembantu', 'Bahan Kemasan')
 }

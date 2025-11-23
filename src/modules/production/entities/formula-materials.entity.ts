@@ -1,0 +1,157 @@
+import { Entity, Column, ManyToOne, JoinColumn, Index } from 'typeorm';
+import { BaseEntity } from '../../../common/entities/base.entity';
+import { ProductionFormulas } from './production-formulas.entity';
+import { ProductCodes } from '../../products/entity/product_codes.entity';
+import { ProductCategories } from '../../products/entity/product_categories.entity';
+import { Users } from '../../users/entities/users.entity';
+
+/**
+ * FormulaMaterials Entity
+ * Bill of Materials (BOM) - Detail bahan yang dibutuhkan untuk 1 formula
+ *
+ * Business Rules:
+ * - Multiple materials per formula
+ * - Quantity based on standard batch size
+ * - Supports different material types (raw, concentrate, packaging)
+ * - Tracks sequence for production steps
+ *
+ * Example for "Jambu 250ML v1.0" (Batch Size: 100 bottles):
+ * 1. RAW_MATERIAL: Jambu Merah 10kg
+ * 2. RAW_MATERIAL: Gula Pasir 5kg
+ * 3. CONCENTRATE: Concentrate Base 2L
+ * 4. PACKAGING: Bottle 250ML 100pcs
+ * 5. PACKAGING: Cap 100pcs
+ */
+@Entity({ name: 'formula_materials', synchronize: false })
+@Index(['formulaId']) // Quick lookup by formula
+@Index(['materialProductCodeId']) // Quick lookup by material
+@Index(['sequence']) // For ordered display
+export class FormulaMaterials extends BaseEntity {
+  // Formula Reference
+  @Column({
+    comment: 'Foreign key to production_formulas',
+  })
+  formulaId: number;
+
+  @ManyToOne(() => ProductionFormulas, (formula) => formula.materials, {
+    onDelete: 'CASCADE',
+  })
+  @JoinColumn({ name: 'formulaId' })
+  formula: ProductionFormulas;
+
+  @Column({
+    comment: 'Product code of the material (FK to product_codes)',
+  })
+  materialProductCodeId: number;
+
+  @ManyToOne(() => ProductCodes, { eager: true })
+  @JoinColumn({ name: 'materialProductCodeId' })
+  materialProductCode: ProductCodes;
+
+  // Formula Calculation Value (Simplified)
+  @Column({
+    type: 'decimal',
+    precision: 22,
+    scale: 10,
+    default: 0,
+    comment:
+      'Formula calculation value (ratio or quantity). Planned Qty = rumus × Target Production',
+  })
+  rumus: number;
+
+  @Column({
+    length: 20,
+    nullable: false,
+    default: 'KG',
+    comment:
+      'Unit of measurement (auto-populated from productSize) - KG, LITER, PCS, etc.',
+  })
+  unit: string;
+
+  // Costing (Material Cost)
+  @Column({
+    type: 'decimal',
+    precision: 15,
+    scale: 2,
+    nullable: true,
+    comment: 'Standard unit cost (Rp per KG/LITER/PCS) - optional',
+  })
+  standardUnitCost: number | null;
+
+  @Column({
+    type: 'decimal',
+    precision: 15,
+    scale: 2,
+    nullable: true,
+    comment: 'Total cost for this material in one batch (calculated)',
+  })
+  totalCost: number | null;
+
+  // Production Sequence
+  @Column({
+    type: 'int',
+    default: 1,
+    comment: 'Sequence order in production process (1, 2, 3, ...)',
+  })
+  sequence: number;
+
+  @Column({
+    type: 'text',
+    nullable: true,
+    comment: 'Notes about this material usage',
+  })
+  notes: string | null;
+
+  // Status
+  @Column({
+    default: true,
+    comment: 'Is this material still active in formula?',
+  })
+  isActive: boolean;
+
+  // Audit
+  @Column({ nullable: true })
+  createdBy: number;
+
+  @ManyToOne(() => Users, { nullable: true })
+  @JoinColumn({ name: 'createdBy' })
+  creator: Users;
+
+  @Column({ nullable: true })
+  updatedBy: number;
+
+  @ManyToOne(() => Users, { nullable: true })
+  @JoinColumn({ name: 'updatedBy' })
+  updater: Users;
+
+  /**
+   * Virtual Property: Calculate Total Cost
+   */
+  calculateTotalCost(): number {
+    if (!this.standardUnitCost) {
+      return 0;
+    }
+    return Number(this.rumus) * Number(this.standardUnitCost);
+  }
+
+  /**
+   * Calculate Planned Quantity based on Target Production
+   * @param targetLiters - Target production volume in liters
+   * @returns Calculated quantity based on rumus (formula ratio)
+   *
+   * Example:
+   * - rumus = 0.50 (LEMON PREMIUM - 500ml per liter)
+   * - targetLiters = 40
+   * - Result = 0.50 × 40 = 20.00 liters
+   */
+  calculatePlannedQuantity(targetLiters: number): number {
+    return Number(this.rumus) * targetLiters;
+  }
+
+  /**
+   * Virtual Property: Material Display Name
+   */
+  get displayName(): string {
+    return `${this.materialProductCode?.productCode || 'Unknown'} - ${this.rumus} ${this.unit}`;
+  }
+}

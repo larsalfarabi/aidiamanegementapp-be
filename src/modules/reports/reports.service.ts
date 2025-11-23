@@ -576,19 +576,20 @@ export class ReportsService {
       );
     }
 
-    // Step 2: Transform to flat structure (1 row per order item)
+    // Step 2: Transform to aggregated structure (1 row per invoice)
+    // Human-Centered: Customer report shows totals per invoice, NOT per item
     interface ExcelRow {
       tanggal: Date;
       noInvoice: string;
       namaPelanggan: string;
       type: string;
-      kode: string;
-      namaBarang: string;
-      unit: number;
-      priceList: number;
-      dpp: number;
-      disc: number;
-      netSales: number;
+      kode: string; // Empty for aggregated view
+      namaBarang: string; // Always 'TOTAL' for aggregated view
+      unit: number; // Total units in this invoice
+      priceList: string; // Empty for aggregated view
+      dpp: number; // Total DPP for this invoice
+      disc: number; // Average discount percentage
+      netSales: number; // Total net sales for this invoice
     }
 
     const rows: ExcelRow[] = [];
@@ -596,30 +597,50 @@ export class ReportsService {
     let grandTotalDPP = 0;
     let grandTotalNetSales = 0;
 
+    // Aggregate per invoice (NOT per item)
     orders.forEach((order) => {
+      let invoiceTotalUnit = 0;
+      let invoiceTotalDPP = 0;
+      let invoiceTotalNetSales = 0;
+      let invoiceTotalDiscount = 0;
+      let invoiceTotalPriceList = 0;
+
       order.orderItems.forEach((item) => {
         const dpp = item.quantity * item.unitPrice;
         const discountAmount = (dpp * item.discountPercentage) / 100;
         const netSales = dpp - discountAmount;
 
-        rows.push({
-          tanggal: order.invoiceDate,
-          noInvoice: order.invoiceNumber,
-          namaPelanggan: order.customerName,
-          type: order.customer.customerType,
-          kode: item.productCode?.productCode || 'N/A',
-          namaBarang: 'TOTAL', // Fixed value for customer sales report
-          unit: item.quantity,
-          priceList: item.unitPrice,
-          dpp,
-          disc: item.discountPercentage,
-          netSales,
-        });
-
-        grandTotalUnit += item.quantity;
-        grandTotalDPP += dpp;
-        grandTotalNetSales += netSales;
+        invoiceTotalUnit += item.quantity;
+        invoiceTotalDPP += dpp;
+        invoiceTotalNetSales += netSales;
+        invoiceTotalDiscount += item.discountPercentage;
+        invoiceTotalPriceList += item.unitPrice;
       });
+
+      // Calculate averages
+      const itemCount = order.orderItems.length;
+      const avgDiscount = itemCount > 0 ? invoiceTotalDiscount / itemCount : 0;
+      const avgPriceList =
+        itemCount > 0 ? invoiceTotalPriceList / itemCount : 0;
+
+      // Add ONE row per invoice (aggregated)
+      rows.push({
+        tanggal: order.invoiceDate,
+        noInvoice: order.invoiceNumber,
+        namaPelanggan: order.customerName,
+        type: order.customer.customerType,
+        kode: '', // Empty for customer report (aggregated view)
+        namaBarang: 'TOTAL', // Fixed label for customer report
+        unit: invoiceTotalUnit,
+        priceList: '', // Empty for customer report (aggregated view)
+        dpp: invoiceTotalDPP,
+        disc: avgDiscount,
+        netSales: invoiceTotalNetSales,
+      });
+
+      grandTotalUnit += invoiceTotalUnit;
+      grandTotalDPP += invoiceTotalDPP;
+      grandTotalNetSales += invoiceTotalNetSales;
     });
 
     // Step 3: Create Excel workbook
@@ -673,10 +694,10 @@ export class ReportsService {
       'Net Sales',
     ]);
 
-    // Apply header styling only to columns A-K (Tanggal to Net Sales)
+    // Apply header styling to all 11 columns (A-K)
     headerRow.eachCell({ includeEmpty: false }, (cell, colNumber) => {
       if (colNumber <= 11) {
-        // Only apply to columns A-K
+        // Apply to columns A-K
         cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
         cell.fill = {
           type: 'pattern',
@@ -688,50 +709,50 @@ export class ReportsService {
     });
     headerRow.height = 25;
 
-    // Step 6: Add data rows
+    // Step 6: Add data rows (Kode and Price List columns exist but values are empty)
     rows.forEach((row) => {
       const excelRow = worksheet.addRow([
         row.tanggal,
         row.noInvoice,
         row.namaPelanggan,
         row.type,
-        row.kode,
+        row.kode, // Empty value
         row.namaBarang,
         row.unit,
-        row.priceList,
+        row.priceList, // Empty value
         row.dpp,
         row.disc,
         row.netSales,
       ]);
 
-      // Format cells
+      // Format cells with 11 columns (Kode and Price List empty but formatted)
       excelRow.getCell(1).numFmt = 'dd-mmm-yy'; // Date format
       excelRow.getCell(7).numFmt = '#,##0'; // Unit (no decimals)
-      excelRow.getCell(8).numFmt = 'Rp #,##0'; // Price List
+      excelRow.getCell(8).numFmt = 'Rp #,##0'; // Price List (empty value)
       excelRow.getCell(9).numFmt = 'Rp #,##0'; // DPP
       excelRow.getCell(10).numFmt = '0.00"%"'; // Discount percentage
       excelRow.getCell(11).numFmt = 'Rp #,##0'; // Net Sales
     });
 
-    // Step 7: Add grand total footer
+    // Step 7: Add grand total footer (11 columns with empty Kode and Price List)
     const totalRow = worksheet.addRow([
       '',
       '',
       '',
       '',
-      '',
+      '', // Empty Kode column
       'GRAND TOTAL',
       grandTotalUnit,
-      '',
+      '', // Empty Price List column
       grandTotalDPP,
       '',
       grandTotalNetSales,
     ]);
 
-    // Apply styling only to columns A-K (limit to Net Sales)
+    // Apply styling to all 11 columns (A-K)
     totalRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
       if (colNumber <= 11) {
-        // Only apply to columns A-K
+        // Apply to columns A-K
         cell.font = { bold: true, size: 12 };
         cell.fill = {
           type: 'pattern',
@@ -756,16 +777,16 @@ export class ReportsService {
       }
     });
 
-    // Step 8: Format columns
+    // Step 8: Format columns (11 columns total - Kode and Price List exist but values empty)
     worksheet.columns = [
       { key: 'tanggal', width: 12 }, // A
       { key: 'noInvoice', width: 22 }, // B
       { key: 'namaPelanggan', width: 35 }, // C
       { key: 'type', width: 15 }, // D
-      { key: 'kode', width: 18 }, // E
+      { key: 'kode', width: 18 }, // E (column exists, values empty)
       { key: 'namaBarang', width: 40 }, // F
       { key: 'unit', width: 10 }, // G
-      { key: 'priceList', width: 15 }, // H
+      { key: 'priceList', width: 15 }, // H (column exists, values empty)
       { key: 'dpp', width: 15 }, // I
       { key: 'disc', width: 10 }, // J
       { key: 'netSales', width: 15 }, // K
@@ -1074,7 +1095,7 @@ export class ReportsService {
 
       // Add TOTAL row for this invoice (pemisah antar invoice)
       rows.push({
-        tanggal: null, // No date for subtotal row
+        tanggal: order.invoiceDate, // No date for subtotal row
         noInvoice: order.invoiceNumber,
         namaPelanggan: order.customerName,
         type: order.customer.customerType,
@@ -1224,7 +1245,7 @@ export class ReportsService {
 
     // Step 7: Add grand total footer
     const totalRow = worksheet.addRow([
-      '',
+      'TOTAL', // Show 'TOTAL' text in date column (bold)
       '',
       '',
       '',
@@ -1237,7 +1258,7 @@ export class ReportsService {
       grandTotalNetSales,
     ]);
 
-    // Apply styling only to columns A-K (same as customer export)
+    // Apply styling only to columns A-K
     totalRow.eachCell(
       { includeEmpty: true },
       (cell: ExcelJS.Cell, colNumber: number) => {
@@ -1250,7 +1271,9 @@ export class ReportsService {
           };
 
           // Conditional formatting per column
-          if (colNumber === 6) {
+          if (colNumber === 1) {
+            cell.alignment = { horizontal: 'center' }; // TOTAL text in date column
+          } else if (colNumber === 6) {
             cell.alignment = { horizontal: 'right' }; // GRAND TOTAL label
           } else if (colNumber === 7) {
             cell.numFmt = '#,##0'; // Total Unit
@@ -1263,13 +1286,12 @@ export class ReportsService {
       },
     );
 
-    // Step 8: Format columns (auto-width)
+    // Step 8: Format columns (auto-width) - REMOVED 'kode' column
     worksheet.columns = [
       { key: 'tanggal', width: 12 },
       { key: 'noInvoice', width: 22 },
       { key: 'namaPelanggan', width: 35 },
       { key: 'type', width: 15 },
-      { key: 'kode', width: 18 },
       { key: 'namaBarang', width: 40 },
       { key: 'unit', width: 10 },
       { key: 'priceList', width: 15 },

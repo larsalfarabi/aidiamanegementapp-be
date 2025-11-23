@@ -57,6 +57,12 @@ export class CreateProductDto extends OmitType(ProductDto, ['updatedBy']) {}
 
 export class UpdateProductDto extends PartialType(ProductDto) {}
 
+export class QueryProductDto extends PaginationDto {
+  @IsOptional()
+  @IsString()
+  mainCategory?: string;
+}
+
 // DTO for checking/creating product item (find or create pattern)
 export class CheckOrCreateProductDto {
   @IsString()
