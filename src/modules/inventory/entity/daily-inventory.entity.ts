@@ -25,7 +25,7 @@ import { BaseEntity } from '../../../common/entities/base.entity';
  * - barangOutSample updated when samples are distributed
  *
  * Formula (GENERATED COLUMN):
- * stokAkhir = stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample
+ * stokAkhir = stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample - barangOutProduksi
  */
 @Entity({ name: 'daily_inventory', synchronize: false })
 @Index(['productCodeId', 'businessDate'], { unique: true }) // One record per product per day
@@ -90,9 +90,18 @@ export class DailyInventory extends BaseEntity {
   })
   barangOutSample: number;
 
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    comment: 'Goods out for production (material consumption)',
+  })
+  barangOutProduksi: number;
+
   /**
    * GENERATED COLUMN - Auto-calculated by database
-   * Formula: stokAkhir = stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample
+   * Formula: stokAkhir = stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample - barangOutProduksi
    *
    * NOTE: This column is NOT managed by TypeORM!
    * The database automatically calculates this value using GENERATED ALWAYS AS.
@@ -104,8 +113,9 @@ export class DailyInventory extends BaseEntity {
     scale: 2,
     generatedType: 'STORED',
     asExpression:
-      '(stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample)',
-    comment: 'Ending stock (GENERATED COLUMN - auto-calculated)',
+      '(stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample - barangOutProduksi)',
+    comment:
+      'Ending stock (GENERATED COLUMN - includes production material out)',
     insert: false, // Prevent insertion
     update: false, // Prevent updates
     select: true, // Include in SELECT queries

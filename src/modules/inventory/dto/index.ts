@@ -7,3 +7,4 @@ export * from './filter-inventory.dto';
 export * from './filter-transactions.dto';
 export * from './filter-daily-inventory.dto';
 export * from './check-stock.dto';
+export * from './record-material-production.dto';

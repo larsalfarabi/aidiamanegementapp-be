@@ -7,6 +7,9 @@ import { ProductCategories } from './entity/product_categories.entity';
 import { ProductSizes } from './entity/product_sizes.entity';
 import { ProductCodes } from './entity/product_codes.entity';
 import { CategoryHierarchyService } from './services/category-hierarchy.service';
+import { Users } from '../users/entities/users.entity';
+import { RedisModule } from '../redis/redis.module';
+import { PermissionGuard } from '../auth/guards/permission.guard';
 
 @Module({
   imports: [
@@ -15,10 +18,12 @@ import { CategoryHierarchyService } from './services/category-hierarchy.service'
       ProductCategories,
       ProductSizes,
       ProductCodes,
+      Users,
     ]),
+    RedisModule,
   ],
   controllers: [ProductsController],
-  providers: [ProductsService, CategoryHierarchyService],
+  providers: [ProductsService, CategoryHierarchyService, PermissionGuard],
   exports: [CategoryHierarchyService],
 })
 export class ProductsModule {}

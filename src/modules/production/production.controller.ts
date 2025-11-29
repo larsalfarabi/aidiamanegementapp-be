@@ -12,6 +12,9 @@ import {
   Req,
 } from '@nestjs/common';
 import { JwtGuard } from '../auth/guards/auth.guard';
+import { PermissionGuard } from '../auth/guards/permission.guard';
+import { RequirePermissions } from '../../common/decorator/permission.decorator';
+import { Resource, Action } from '../../common/enums/resource.enum';
 import { ProductionFormulaService, ProductionBatchService } from './services';
 import {
   CreateFormulaDto,
@@ -23,7 +26,7 @@ import {
 } from './dto';
 
 @Controller('production')
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, PermissionGuard)
 export class ProductionController {
   constructor(
     private readonly formulaService: ProductionFormulaService,
@@ -36,6 +39,7 @@ export class ProductionController {
    * POST /production/formulas
    * Create new production formula
    */
+  @RequirePermissions(`${Resource.FORMULA}:${Action.CREATE}`)
   @Post('formulas')
   async createFormula(@Body() dto: CreateFormulaDto, @Req() req: any) {
     const userId = req.user?.id || 1;
@@ -46,6 +50,7 @@ export class ProductionController {
    * GET /production/formulas
    * Get all formulas with pagination and filters
    */
+  @RequirePermissions(`${Resource.FORMULA}:${Action.VIEW}`)
   @Get('formulas')
   async getFormulas(@Query() filterDto: FilterFormulaDto) {
     return this.formulaService.getFormulas(filterDto);
@@ -55,6 +60,7 @@ export class ProductionController {
    * GET /production/formulas/:id
    * Get formula by ID
    */
+  @RequirePermissions(`${Resource.FORMULA}:${Action.VIEW}`)
   @Get('formulas/:id')
   async getFormulaById(@Param('id', ParseIntPipe) id: number) {
     return this.formulaService.getFormulaById(id);
@@ -64,6 +70,7 @@ export class ProductionController {
    * GET /production/formulas/active/:productCodeId
    * Get active formula for a product
    */
+  @RequirePermissions(`${Resource.FORMULA}:${Action.VIEW}`)
   @Get('formulas/active/:productCodeId')
   async getActiveFormula(
     @Param('productCodeId', ParseIntPipe) productCodeId: number,
@@ -75,6 +82,7 @@ export class ProductionController {
    * PUT /production/formulas/:id
    * Update formula
    */
+  @RequirePermissions(`${Resource.FORMULA}:${Action.UPDATE}`)
   @Put('formulas/:id')
   async updateFormula(
     @Param('id', ParseIntPipe) id: number,
@@ -89,6 +97,7 @@ export class ProductionController {
    * DELETE /production/formulas/:id
    * Deactivate formula
    */
+  @RequirePermissions(`${Resource.FORMULA}:${Action.DELETE}`)
   @Delete('formulas/:id')
   async deactivateFormula(
     @Param('id', ParseIntPipe) id: number,
@@ -104,6 +113,7 @@ export class ProductionController {
    * POST /production/batches
    * Create new production batch
    */
+  @RequirePermissions(`${Resource.BATCH}:${Action.CREATE}`)
   @Post('batches')
   async createBatch(@Body() dto: CreateBatchDto, @Req() req: any) {
     const userId = req.user?.id || 1;
@@ -114,6 +124,7 @@ export class ProductionController {
    * POST /production/batches/:id/start
    * Start production batch
    */
+  @RequirePermissions(`${Resource.BATCH}:${Action.START}`)
   @Post('batches/:id/start')
   async startBatch(@Param('id', ParseIntPipe) id: number, @Req() req: any) {
     const userId = req.user?.id || 1;
@@ -124,6 +135,7 @@ export class ProductionController {
    * POST /production/batches/:id/record-stage
    * Record production stage
    */
+  @RequirePermissions(`${Resource.BATCH}:${Action.UPDATE}`)
   @Post('batches/:id/record-stage')
   async recordStage(
     @Param('id', ParseIntPipe) id: number,
@@ -138,6 +150,7 @@ export class ProductionController {
    * POST /production/batches/:id/material-adjustments
    * Record material usage adjustments
    */
+  @RequirePermissions(`${Resource.BATCH}:${Action.UPDATE}`)
   @Post('batches/:id/material-adjustments')
   async recordMaterialAdjustments(
     @Param('id', ParseIntPipe) id: number,
@@ -152,6 +165,7 @@ export class ProductionController {
    * GET /production/batches
    * Get all batches with filters
    */
+  @RequirePermissions(`${Resource.BATCH}:${Action.VIEW}`)
   @Get('batches')
   async getBatches(@Query() filterDto: FilterBatchDto) {
     return this.batchService.getBatches(filterDto);
@@ -161,6 +175,7 @@ export class ProductionController {
    * GET /production/batches/:id
    * Get batch by ID
    */
+  @RequirePermissions(`${Resource.BATCH}:${Action.VIEW}`)
   @Get('batches/:id')
   async getBatchById(@Param('id', ParseIntPipe) id: number) {
     return this.batchService.getBatchById(id);
@@ -170,6 +185,7 @@ export class ProductionController {
    * POST /production/batches/:id/cancel
    * Cancel batch
    */
+  @RequirePermissions(`${Resource.BATCH}:${Action.CANCEL}`)
   @Post('batches/:id/cancel')
   async cancelBatch(
     @Param('id', ParseIntPipe) id: number,

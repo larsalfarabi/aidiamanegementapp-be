@@ -11,7 +11,11 @@ import {
 } from './entities';
 import { ProductCodes } from '../products/entity/product_codes.entity';
 import { ProductCategories } from '../products/entity/product_categories.entity';
-import { InventoryTransactions } from '../inventory/entity/inventory_transactions.entity';
+import { InventoryTransactions } from '../inventory/entity/inventory-transactions.entity';
+import { InventoryModule } from '../inventory/inventory.module';
+import { PermissionGuard } from '../auth/guards/permission.guard';
+import { Users } from '../users/entities/users.entity';
+import { RedisModule } from '../redis/redis.module';
 
 @Module({
   imports: [
@@ -24,10 +28,17 @@ import { InventoryTransactions } from '../inventory/entity/inventory_transaction
       ProductCodes,
       ProductCategories,
       InventoryTransactions,
+      Users,
     ]),
+    InventoryModule,
+    RedisModule, // Import InventoryModule to use InventoryService
   ],
   controllers: [ProductionController],
-  providers: [ProductionFormulaService, ProductionBatchService],
+  providers: [
+    ProductionFormulaService,
+    ProductionBatchService,
+    PermissionGuard,
+  ],
   exports: [ProductionFormulaService, ProductionBatchService],
 })
 export class ProductionModule {}

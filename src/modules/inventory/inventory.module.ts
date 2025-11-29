@@ -1,16 +1,12 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { InventoryController } from './inventory.controller';
-import { InventoryService } from './inventory.service';
+import { InventoryLegacyService } from './services/inventory-legacy.service';
 // Services
 import { DailyInventoryResetService } from './services/daily-inventory-reset.service';
 import { DailyInventoryService } from './services/daily-inventory.service';
 import { InventoryTransactionService } from './services/inventory-transaction.service';
-// Old entities (will be phased out)
-import { Inventory } from './entity/inventory.entity';
-import { InventoryTransactions as OldInventoryTransactions } from './entity/inventory_transactions.entity';
-import { InventoryDailySnapshots as OldInventoryDailySnapshots } from './entity/inventory_daily_snapshots.entity';
-// New entities (Daily Inventory System)
+// Active entities (Daily Inventory System)
 import { DailyInventory } from './entity/daily-inventory.entity';
 import { DailyInventorySnapshots } from './entity/daily-inventory-snapshots.entity';
 import { InventoryTransactions } from './entity/inventory-transactions.entity';
@@ -20,15 +16,14 @@ import { SampleTracking } from './entity/sample-tracking.entity';
 import { ProductCodes } from '../products/entity/product_codes.entity';
 import { Orders } from '../orders/entity/orders.entity';
 import { OrderItems } from '../orders/entity/order_items.entity';
+import { PermissionGuard } from '../auth/guards/permission.guard';
+import { Users } from '../users/entities/users.entity';
+import { RedisModule } from '../redis/redis.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([
-      // Old entities (backward compatibility during migration)
-      Inventory,
-      OldInventoryTransactions,
-      OldInventoryDailySnapshots,
-      // New entities (Daily Inventory System)
+      // Active entities (Daily Inventory System)
       DailyInventory,
       DailyInventorySnapshots,
       InventoryTransactions,
@@ -38,17 +33,20 @@ import { OrderItems } from '../orders/entity/order_items.entity';
       ProductCodes,
       Orders,
       OrderItems,
+      Users,
     ]),
+    RedisModule,
   ],
   controllers: [InventoryController],
   providers: [
-    InventoryService, // Old service (legacy)
-    DailyInventoryService, // New service (daily inventory CRUD)
+    InventoryLegacyService, // Production-only service (3 methods)
+    DailyInventoryService, // Daily inventory CRUD
     DailyInventoryResetService, // Cron job for daily reset
-    InventoryTransactionService, // New service (transaction operations)
+    InventoryTransactionService, // Transaction operations
+    PermissionGuard,
   ],
   exports: [
-    InventoryService, // Export for backward compatibility
+    InventoryLegacyService, // Export for production-batch.service.ts
     DailyInventoryService, // Export for order integration
     InventoryTransactionService, // Export for transaction operations
     DailyInventoryResetService, // Export for testing/manual trigger

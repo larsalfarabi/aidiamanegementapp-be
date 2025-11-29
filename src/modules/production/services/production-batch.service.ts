@@ -18,8 +18,8 @@ import {
   StageStatus,
 } from '../entities';
 import { CreateBatchDto, RecordStageDto, FilterBatchDto } from '../dto';
-import { InventoryTransactions } from '../../inventory/entity/inventory_transactions.entity';
 import { ProductionFormulaService } from './production-formula.service';
+import { InventoryLegacyService } from '../../inventory/services/inventory-legacy.service';
 
 @Injectable()
 export class ProductionBatchService extends BaseResponse {
@@ -36,6 +36,7 @@ export class ProductionBatchService extends BaseResponse {
     private readonly materialUsageRepository: Repository<ProductionMaterialUsage>,
     private readonly dataSource: DataSource,
     private readonly productionFormulaService: ProductionFormulaService,
+    private readonly inventoryService: InventoryLegacyService,
   ) {
     super();
   }
@@ -70,13 +71,14 @@ export class ProductionBatchService extends BaseResponse {
   /**
    * Create Production Batch
    *
-   * New Workflow (Batch Formula System):
+   * New Workflow (Batch Formula System + Inventory Integration):
    * 1. Validate formula exists and is active
    * 2. Calculate material requirements based on targetLiters
-   * 3. Generate batch number
-   * 4. Create batch record with status PLANNED
-   * 5. Auto-create ProductionMaterialUsage records with planned quantities
-   * 6. Initialize 3 stages (PRODUCTION, BOTTLING, QC) with PENDING status
+   * 3. Check material stock availability (HUMAN-CENTERED: Early validation)
+   * 4. Generate batch number
+   * 5. Create batch record with status PLANNED
+   * 6. Auto-create ProductionMaterialUsage records with planned quantities
+   * 7. Initialize 3 stages (PRODUCTION, BOTTLING, QC) with PENDING status
    */
   async createBatch(dto: CreateBatchDto, userId: number) {
     const queryRunner = this.dataSource.createQueryRunner();
@@ -141,7 +143,34 @@ export class ProductionBatchService extends BaseResponse {
         `Calculated ${calculatedMaterials.length} materials for batch`,
       );
 
-      // 3. Generate batch number
+      // 3. HUMAN-CENTERED: Check material stock availability before creating batch
+      // This prevents creating batch that cannot be executed
+      const materialStockCheck = calculatedMaterials.map((m) => ({
+        productCodeId: m.materialProductCodeId,
+        quantity: m.plannedQuantity,
+      }));
+
+      const stockAvailability =
+        await this.inventoryService.checkMaterialAvailability(
+          materialStockCheck,
+        );
+
+      if (!stockAvailability.available) {
+        const shortageDetails = stockAvailability.insufficientMaterials
+          .map(
+            (m) =>
+              `${m.productCode} (${m.productName}): Dibutuhkan ${m.required}, Tersedia ${m.available}, Kurang ${m.shortage}`,
+          )
+          .join('; ');
+
+        throw new BadRequestException(
+          `Stock material tidak mencukupi untuk batch ini. Detail: ${shortageDetails}`,
+        );
+      }
+
+      this.logger.log(`Stock availability check passed for batch creation`);
+
+      // 4. Generate batch number
       const batchNumber = await this.generateBatchNumber(productionDate);
 
       // 4. Create batch with targetLiters as plannedQuantity
@@ -273,12 +302,23 @@ export class ProductionBatchService extends BaseResponse {
   /**
    * Start Production Batch
    * Changes status from PLANNED to IN_PROGRESS
+   * HUMAN-CENTERED: Deducts materials from inventory when production starts
    */
   async startBatch(batchId: number, userId: number) {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
     try {
       const batch = await this.batchRepository.findOne({
         where: { id: batchId },
-        relations: ['formula', 'productCode', 'stages'],
+        relations: [
+          'formula',
+          'productCode',
+          'stages',
+          'materialUsages',
+          'materialUsages.materialProductCode',
+        ],
       });
 
       if (!batch) {
@@ -290,6 +330,31 @@ export class ProductionBatchService extends BaseResponse {
           `Cannot start batch ${batch.batchNumber}. Current status: ${batch.status}`,
         );
       }
+
+      // INVENTORY INTEGRATION: Deduct materials when batch starts
+      // This ensures material stock is reserved and tracked
+      const materialsToDeduct = batch.materialUsages.map((usage) => ({
+        productCodeId: usage.materialProductCodeId,
+        quantity: Number(usage.plannedQuantity),
+        unit: usage.unit,
+      }));
+
+      this.logger.log(
+        `Deducting ${materialsToDeduct.length} materials for batch ${batch.batchNumber}`,
+      );
+
+      // Record material consumption in inventory
+      await this.inventoryService.recordMaterialProduction(
+        batch.batchNumber,
+        materialsToDeduct,
+        userId,
+        batch.performedBy || undefined,
+        `Material untuk batch ${batch.batchNumber}`,
+      );
+
+      this.logger.log(
+        `Materials deducted successfully for batch ${batch.batchNumber}`,
+      );
 
       batch.status = BatchStatus.IN_PROGRESS;
       batch.startedAt = new Date();
@@ -304,15 +369,30 @@ export class ProductionBatchService extends BaseResponse {
         productionStage.status = StageStatus.IN_PROGRESS;
         productionStage.startTime = new Date();
         productionStage.updatedBy = userId;
-        await this.stageRepository.save(productionStage);
+        await queryRunner.manager.save(productionStage);
       }
 
-      await this.batchRepository.save(batch);
+      await queryRunner.manager.save(batch);
+      await queryRunner.commitTransaction();
 
       this.logger.log(`Batch ${batch.batchNumber} started by user ${userId}`);
 
-      return this._success('Production batch started successfully', batch);
+      const updatedBatch = await this.batchRepository.findOne({
+        where: { id: batchId },
+        relations: ['formula', 'productCode', 'stages'],
+      });
+
+      await queryRunner.release();
+
+      return this._success(
+        'Production batch started successfully',
+        updatedBatch,
+      );
     } catch (error) {
+      if (queryRunner.isTransactionActive) {
+        await queryRunner.rollbackTransaction();
+      }
+      await queryRunner.release();
       this.logger.error(`Failed to start batch ${batchId}`, error.stack);
       throw error;
     }
@@ -337,10 +417,22 @@ export class ProductionBatchService extends BaseResponse {
         throw new NotFoundException(`Batch with ID ${batchId} not found`);
       }
 
-      if (batch.status !== BatchStatus.IN_PROGRESS) {
-        throw new BadRequestException(
-          `Cannot record stage for batch ${batch.batchNumber}. Batch must be IN_PROGRESS. Current status: ${batch.status}`,
-        );
+      // Human-Centered Validation: Different status requirements per stage
+      // PRODUCTION & BOTTLING: Must be IN_PROGRESS
+      // QC: Must be QC_PENDING (auto-set after BOTTLING completed)
+      if (dto.stage === ProductionStage.QC) {
+        if (batch.status !== BatchStatus.QC_PENDING) {
+          throw new BadRequestException(
+            `Cannot record QC for batch ${batch.batchNumber}. Batch must be QC_PENDING. Current status: ${batch.status}. Please complete BOTTLING stage first.`,
+          );
+        }
+      } else {
+        // For PRODUCTION and BOTTLING stages
+        if (batch.status !== BatchStatus.IN_PROGRESS) {
+          throw new BadRequestException(
+            `Cannot record ${dto.stage} stage for batch ${batch.batchNumber}. Batch must be IN_PROGRESS. Current status: ${batch.status}`,
+          );
+        }
       }
 
       // Find the stage to record
@@ -443,12 +535,51 @@ export class ProductionBatchService extends BaseResponse {
 
         // Determine QC status
         const totalQC = batch.qcPassedQuantity + batch.qcFailedQuantity;
-        if (batch.qcPassedQuantity === totalQC) {
+        if (batch.qcPassedQuantity === totalQC && totalQC > 0) {
           batch.qcStatus = QCStatus.PASS;
-        } else if (batch.qcPassedQuantity === 0) {
+        } else if (batch.qcPassedQuantity === 0 && totalQC > 0) {
           batch.qcStatus = QCStatus.FAIL;
         } else {
           batch.qcStatus = QCStatus.PARTIAL;
+        }
+
+        // Human-Centered: Update batch status based on QC result
+        // PASS or PARTIAL → COMPLETED (production selesai, ada output yang bisa digunakan)
+        // FAIL → REJECTED (semua output ditolak)
+        if (
+          batch.qcStatus === QCStatus.PASS ||
+          batch.qcStatus === QCStatus.PARTIAL
+        ) {
+          batch.status = BatchStatus.COMPLETED;
+          batch.completedAt = new Date();
+
+          // INVENTORY INTEGRATION: Add finished goods to inventory (QC PASS only)
+          // Only add the quantity that passed QC to finished goods inventory
+          if (batch.qcPassedQuantity > 0) {
+            this.logger.log(
+              `Adding ${batch.qcPassedQuantity} finished goods to inventory for batch ${batch.batchNumber}`,
+            );
+
+            await this.inventoryService.recordFinishedGoodsProduction(
+              batch.productCodeId,
+              batch.qcPassedQuantity,
+              batch.batchNumber,
+              userId,
+              dto.performedBy || undefined,
+              `Hasil produksi batch ${batch.batchNumber} - QC ${batch.qcStatus}`,
+            );
+
+            this.logger.log(
+              `Finished goods added to inventory successfully for batch ${batch.batchNumber}`,
+            );
+          }
+        } else if (batch.qcStatus === QCStatus.FAIL) {
+          batch.status = BatchStatus.REJECTED;
+          batch.completedAt = new Date();
+
+          this.logger.log(
+            `Batch ${batch.batchNumber} rejected - no finished goods added to inventory`,
+          );
         }
 
         // Calculate yield and waste

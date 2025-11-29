@@ -65,6 +65,7 @@ export class ProductsService extends BaseResponse {
         'mainCategory.name',
         'subCategory.id',
         'subCategory.name',
+        'subCategory.categoryType',
         'productSizes.id',
         'productSizes.sizeValue',
         'productSizes.unitOfMeasure',

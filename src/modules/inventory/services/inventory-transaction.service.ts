@@ -34,6 +34,7 @@ import {
   RecordSampleDto,
   ReturnSampleDto,
 } from '../dto/record-transaction.dto';
+import { FilterTransactionsDto } from '../dto/filter-transactions.dto';
 
 /**
  * InventoryTransactionService
@@ -1563,6 +1564,108 @@ export class InventoryTransactionService extends BaseResponse {
     return this._success(
       'Sample history for product retrieved successfully',
       samples,
+    );
+  }
+
+  /**
+   * GET /inventory/transactions/history
+   * Get paginated transaction history with comprehensive filters
+   *
+   * Filters:
+   * - productCodeId: Filter by specific product code
+   * - transactionType: Filter by transaction type (PRODUCTION_IN, SALE, REPACK_OUT, etc.)
+   * - startDate/endDate: Date range filter
+   * - orderId: Filter by order
+   * - productionBatchNumber: Filter by production batch
+   * - mainCategory: Filter by product main category
+   * - page/limit: Pagination
+   */
+  async getTransactionHistory(
+    query: FilterTransactionsDto,
+  ): Promise<ResponsePagination> {
+    const {
+      productCodeId,
+      transactionType,
+      startDate,
+      endDate,
+      orderId,
+      productionBatchNumber,
+      mainCategory,
+      page = 1,
+      limit = 20,
+    } = query;
+
+    const queryBuilder = this.transactionsRepo
+      .createQueryBuilder('transaction')
+      .leftJoinAndSelect('transaction.productCode', 'productCode')
+      .leftJoinAndSelect('productCode.product', 'product')
+      .leftJoinAndSelect('productCode.size', 'size')
+      .leftJoinAndSelect('product.category', 'category');
+
+    // Filter by productCodeId
+    if (productCodeId) {
+      queryBuilder.andWhere('transaction.productCodeId = :productCodeId', {
+        productCodeId,
+      });
+    }
+
+    // Filter by transactionType
+    if (transactionType) {
+      queryBuilder.andWhere('transaction.transactionType = :transactionType', {
+        transactionType,
+      });
+    }
+
+    // Filter by date range
+    if (startDate) {
+      queryBuilder.andWhere('transaction.transactionDate >= :startDate', {
+        startDate,
+      });
+    }
+    if (endDate) {
+      queryBuilder.andWhere('transaction.transactionDate <= :endDate', {
+        endDate,
+      });
+    }
+
+    // Filter by orderId
+    if (orderId) {
+      queryBuilder.andWhere('transaction.orderId = :orderId', { orderId });
+    }
+
+    // Filter by productionBatchNumber
+    if (productionBatchNumber) {
+      queryBuilder.andWhere(
+        'transaction.productionBatchNumber = :productionBatchNumber',
+        { productionBatchNumber },
+      );
+    }
+
+    // Filter by mainCategory (level 0 category)
+    if (mainCategory) {
+      queryBuilder.andWhere(
+        '(category.name = :mainCategory OR (category.name = :mainCategory AND category.level = 0))',
+        { mainCategory },
+      );
+    }
+
+    // Order by transaction date (newest first)
+    queryBuilder.orderBy('transaction.transactionDate', 'DESC');
+    queryBuilder.addOrderBy('transaction.id', 'DESC');
+
+    // Pagination
+    const offset = (page - 1) * limit;
+    queryBuilder.skip(offset).take(limit);
+
+    // Execute query
+    const [transactions, total] = await queryBuilder.getManyAndCount();
+
+    return this._pagination(
+      'Transaction history retrieved successfully',
+      transactions,
+      total,
+      page,
+      limit,
     );
   }
 }

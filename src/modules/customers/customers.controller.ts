@@ -16,6 +16,9 @@ import {
 import { Pagination } from '../../common/decorator/pagination.decorator';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { JwtGuard } from '../auth/guards/auth.guard';
+import { PermissionGuard } from '../auth/guards/permission.guard';
+import { RequirePermissions } from '../../common/decorator/permission.decorator';
+import { Resource, Action } from '../../common/enums/resource.enum';
 import { InjectCreatedBy } from '../../common/decorator/inject-createdBy.decorator';
 import { InjectUpdatedBy } from '../../common/decorator/inject-updatedBy.decorator';
 import {
@@ -25,27 +28,31 @@ import {
 } from './dto/customers.dto';
 import { InjectDeletedBy } from '../../common/decorator/inject-deletedBy.decorator';
 
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, PermissionGuard)
 @Controller('customers')
 export class CustomersController {
   constructor(private readonly customersService: CustomersService) {}
 
   @Get()
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.VIEW}`)
   async findAll(@Pagination() query: PaginationDto) {
     return this.customersService.findAll(query);
   }
 
   @Get(':id')
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.VIEW}`)
   async findOne(@Param('id') id: string) {
     return this.customersService.findOne(+id);
   }
 
   @Post()
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.CREATE}`)
   async create(@InjectCreatedBy() createCustomerDto: CreateCustomerDto) {
     return this.customersService.create(createCustomerDto);
   }
 
   @Put(':id')
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.UPDATE}`)
   async update(
     @InjectUpdatedBy() payload: UpdateCustomerDto,
     @Param('id') id: string,
@@ -54,6 +61,7 @@ export class CustomersController {
   }
 
   @Delete(':id')
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.DELETE}`)
   async delete(
     @Param('id') id: string,
     @InjectDeletedBy() payload: DeleteCustomerDto,
@@ -62,6 +70,7 @@ export class CustomersController {
   }
 
   @Get(':id/product-catalog')
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.VIEW}`)
   async getCustomerProductCatalog(
     @Param('id') id: string,
     @Pagination() query: PaginationDto,
@@ -70,11 +79,13 @@ export class CustomersController {
   }
 
   @Get(':id/product-catalog-ids')
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.VIEW}`)
   async getCustomerProductCatalogIds(@Param('id') id: string) {
     return this.customersService.getCustomerProductCatalogIds(+id);
   }
 
   @Post('product-catalog')
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.UPDATE}`)
   async addProdutcToCatalog(
     @InjectCreatedBy() createCatalogDto: CreateCustomerProductCatalogDto,
   ) {
@@ -82,6 +93,7 @@ export class CustomersController {
   }
 
   @Put(':id/product-catalog')
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.UPDATE}`)
   async updateProductInCatalog(
     @Param('id') id: string,
     @InjectUpdatedBy() payload: UpdateCustomerProductCatalogDto,
@@ -90,6 +102,7 @@ export class CustomersController {
   }
 
   @Delete(':id/product-catalog')
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.DELETE}`)
   async removeProductFromCatalog(@Param('id') id: string) {
     return this.customersService.removeProductFromCatalog(+id);
   }

@@ -1,6 +1,6 @@
 import { IsOptional, IsEnum, IsNumber, IsString } from 'class-validator';
 import { Type } from 'class-transformer';
-import { TransactionType } from '../entity/inventory_transactions.entity';
+import { TransactionType } from '../entity/inventory-transactions.entity';
 
 /**
  * DTO for filtering inventory transactions

@@ -29,14 +29,18 @@ import {
 } from './dto/customer-sales-export.dto';
 import { ProductSalesExportQueryDto } from './dto/product-sales-export.dto';
 import { JwtGuard } from '../auth/guards/auth.guard';
+import { PermissionGuard } from '../auth/guards/permission.guard';
+import { RequirePermissions } from '../../common/decorator/permission.decorator';
+import { Resource, Action } from '../../common/enums/resource.enum';
 
 @ApiTags('reports')
 @ApiBearerAuth()
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, PermissionGuard)
 @Controller('reports')
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
+  @RequirePermissions(`${Resource.REPORT}:${Action.VIEW}`)
   @Get('sales/products')
   @ApiOperation({
     summary: 'Get Product Sales Report',
@@ -64,6 +68,7 @@ export class ReportsController {
     return this.reportsService.getProductSalesReport(query);
   }
 
+  @RequirePermissions(`${Resource.REPORT}:${Action.VIEW}`)
   @Get('sales/customers')
   @ApiOperation({
     summary: 'Get Customer Sales Report',
@@ -91,6 +96,7 @@ export class ReportsController {
     return this.reportsService.getCustomerSalesReport(query);
   }
 
+  @RequirePermissions(`${Resource.REPORT}:${Action.EXPORT}`)
   @Get('sales/customers/export')
   @ApiOperation({
     summary: 'Export Customer Sales Report to Excel',
@@ -141,6 +147,7 @@ export class ReportsController {
     return new StreamableFile(buffer);
   }
 
+  @RequirePermissions(`${Resource.REPORT}:${Action.EXPORT}`)
   @Get('sales/products/export')
   @ApiOperation({
     summary: 'Export Product Sales Report to Excel',

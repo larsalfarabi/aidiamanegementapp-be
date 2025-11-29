@@ -332,7 +332,7 @@ export class DailyInventoryService extends BaseResponse {
    */
   async softDelete(id: number): Promise<ResponseSuccess> {
     const inventory = await this.dailyInventoryRepo.findOne({
-      where: { id, deletedAt: IsNull() },
+      where: { id },
     });
 
     if (!inventory) {
@@ -341,7 +341,109 @@ export class DailyInventoryService extends BaseResponse {
 
     await this.dailyInventoryRepo.softDelete(id);
 
-    return this._success('Daily inventory deleted successfully', null);
+    return this._success('Daily inventory deleted successfully');
+  }
+
+  /**
+   * POST /inventory/daily/bulk-register - Bulk register products to inventory
+   *
+   * Human-Centered Design: One-click setup for testing or initial deployment
+   *
+   * @param mainCategory Filter products by main category (optional - if not provided, register ALL)
+   * @param initialStock Initial stock amount (default: 100 for testing)
+   * @param minimumStock Minimum stock threshold (default: 10)
+   * @param userId User performing the action
+   */
+  async bulkRegisterProducts(
+    mainCategory: string | null,
+    initialStock: number,
+    minimumStock: number,
+    userId: number,
+  ): Promise<ResponseSuccess> {
+    const businessDate = new Date().toISOString().split('T')[0];
+
+    // Get all product codes, optionally filtered by mainCategory
+    const queryBuilder = this.productCodesRepo
+      .createQueryBuilder('pc')
+      .leftJoinAndSelect('pc.product', 'product')
+      .leftJoinAndSelect('product.category', 'category')
+      .leftJoinAndSelect('pc.size', 'size')
+      .where('pc.isActive = :isActive', { isActive: true });
+
+    if (mainCategory) {
+      queryBuilder.andWhere('category.name = :mainCategory', { mainCategory });
+    }
+
+    const productCodes = await queryBuilder.getMany();
+
+    if (productCodes.length === 0) {
+      throw new NotFoundException(
+        mainCategory
+          ? `No active products found for category: ${mainCategory}`
+          : 'No active products found',
+      );
+    }
+
+    // Get existing inventory records for today
+    const existingInventory = await this.dailyInventoryRepo.find({
+      where: {
+        businessDate: businessDate as any,
+        deletedAt: IsNull(),
+      },
+    });
+
+    const existingProductCodeIds = new Set(
+      existingInventory.map((inv) => inv.productCodeId),
+    );
+
+    // Filter products that are not yet registered
+    const productsToRegister = productCodes.filter(
+      (pc) => !existingProductCodeIds.has(pc.id),
+    );
+
+    if (productsToRegister.length === 0) {
+      return this._success('All products already registered in inventory', {
+        totalProducts: productCodes.length,
+        alreadyRegistered: existingProductCodeIds.size,
+        newlyRegistered: 0,
+      });
+    }
+
+    // Bulk create inventory records
+    const inventoryRecords = productsToRegister.map((pc) =>
+      this.dailyInventoryRepo.create({
+        productCodeId: pc.id,
+        businessDate: businessDate as any,
+        stokAwal: initialStock,
+        barangMasuk: 0,
+        dipesan: 0,
+        barangOutRepack: 0,
+        barangOutSample: 0,
+        barangOutProduksi: 0,
+        minimumStock: minimumStock,
+        maximumStock: initialStock * 2, // Set max as 2x initial stock
+        isActive: true,
+        notes: `Bulk registration - Initial stock: ${initialStock}`,
+        createdBy: userId,
+        updatedBy: userId,
+      }),
+    );
+
+    await this.dailyInventoryRepo.save(inventoryRecords);
+
+    return this._success('Products registered to inventory successfully', {
+      totalProducts: productCodes.length,
+      alreadyRegistered: existingProductCodeIds.size,
+      newlyRegistered: productsToRegister.length,
+      mainCategory: mainCategory || 'ALL',
+      initialStock,
+      minimumStock,
+      registeredProducts: productsToRegister.map((pc) => ({
+        productCode: pc.productCode,
+        name: pc.product.name,
+        category: pc.product.category.name,
+      })),
+    });
   }
 
   /**

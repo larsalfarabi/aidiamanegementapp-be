@@ -14,11 +14,13 @@ import {
   Req,
 } from '@nestjs/common';
 import { Request } from 'express';
-import { InventoryService } from './inventory.service';
 import { DailyInventoryService } from './services/daily-inventory.service';
 import { DailyInventoryResetService } from './services/daily-inventory-reset.service';
 import { InventoryTransactionService } from './services/inventory-transaction.service';
 import { JwtGuard } from '../auth/guards/auth.guard';
+import { PermissionGuard } from '../auth/guards/permission.guard';
+import { RequirePermissions } from '../../common/decorator/permission.decorator';
+import { Resource, Action } from '../../common/enums/resource.enum';
 import {
   CreateInventoryDto,
   UpdateInventoryDto,
@@ -35,11 +37,10 @@ interface AuthRequest extends Request {
   user: { id: number };
 }
 
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, PermissionGuard)
 @Controller('inventory')
 export class InventoryController {
   constructor(
-    private readonly inventoryService: InventoryService,
     private readonly dailyInventoryService: DailyInventoryService,
     private readonly dailyResetService: DailyInventoryResetService,
     private readonly transactionService: InventoryTransactionService,
@@ -59,6 +60,7 @@ export class InventoryController {
    * - barangOutSample (Out as Samples)
    * - stokAkhir (Ending Stock - GENERATED COLUMN)
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
   @Get('daily')
   async getDailyInventory(@Query() query: FilterDailyInventoryDto) {
     return this.dailyInventoryService.findAll(query);
@@ -68,6 +70,7 @@ export class InventoryController {
    * GET /inventory/daily/low-stock - Get products with low stock
    * Query params: businessDate (optional, default: today)
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
   @Get('daily/low-stock')
   async getLowStockProductsDaily(@Query('businessDate') businessDate?: string) {
     return this.dailyInventoryService.getLowStockProducts(businessDate);
@@ -95,6 +98,7 @@ export class InventoryController {
    * Biasanya tidak diperlukan karena cron job otomatis membuat record baru.
    * Digunakan untuk setup awal atau recovery.
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.CREATE}`)
   @Post('daily')
   @HttpCode(HttpStatus.CREATED)
   async createDailyInventory(@Body() dto: any, @Req() req: AuthRequest) {
@@ -105,6 +109,7 @@ export class InventoryController {
    * PATCH /inventory/daily/:id - Update inventory settings
    * Hanya bisa update: minimumStock, maximumStock, notes, isActive
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.UPDATE}`)
   @Patch('daily/:id')
   async updateDailyInventory(
     @Param('id', ParseIntPipe) id: number,
@@ -117,9 +122,37 @@ export class InventoryController {
   /**
    * DELETE /inventory/daily/:id - Soft delete inventory record
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.DELETE}`)
   @Delete('daily/:id')
   async deleteDailyInventory(@Param('id', ParseIntPipe) id: number) {
     return this.dailyInventoryService.softDelete(id);
+  }
+
+  /**
+   * POST /inventory/daily/bulk-register - Bulk register products to inventory
+   *
+   * Human-Centered Design: One-click setup for testing or deployment
+   *
+   * Body params:
+   * - mainCategory?: string (optional - if null, register ALL products)
+   * - initialStock?: number (default: 100)
+   * - minimumStock?: number (default: 10)
+   */
+  @Post('daily/bulk-register')
+  @HttpCode(HttpStatus.CREATED)
+  async bulkRegisterProducts(
+    @Body('mainCategory') mainCategory: string | null,
+    @Body('initialStock') initialStock: number = 100,
+    @Body('minimumStock') minimumStock: number = 10,
+    @Req() req: AuthRequest,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.dailyInventoryService.bulkRegisterProducts(
+      mainCategory,
+      initialStock,
+      minimumStock,
+      userId,
+    );
   }
 
   /**
@@ -155,6 +188,7 @@ export class InventoryController {
    * Record production output (finished goods masuk gudang)
    * Updates: daily_inventory.barangMasuk++
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.CREATE}`)
   @Post('transactions/production')
   @HttpCode(HttpStatus.CREATED)
   async recordProductionTransaction(
@@ -183,6 +217,7 @@ export class InventoryController {
    * Record repacking operation (e.g., 1L → 4x 250ML)
    * Updates: source.barangOutRepack++, target.barangMasuk++
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.REPACK}`)
   @Post('transactions/repacking')
   @HttpCode(HttpStatus.CREATED)
   async recordRepackingTransaction(
@@ -239,6 +274,18 @@ export class InventoryController {
       req.user.id,
       dto.reason,
     );
+  }
+
+  /**
+   * GET /inventory/transactions/history - Get transaction history
+   * Query params: productCodeId, transactionType, startDate, endDate, orderId, productionBatchNumber, page, limit
+   *
+   * Returns paginated transaction history with filtering support
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('transactions/history')
+  async getTransactionHistory(@Query() query: FilterTransactionsDto) {
+    return this.transactionService.getTransactionHistory(query);
   }
 
   // ==================== REPACKING QUERY ENDPOINTS ====================
@@ -320,102 +367,22 @@ export class InventoryController {
     return this.transactionService.getSampleById(id);
   }
 
-  // ==================== OLD INVENTORY CRUD (Legacy) ====================
-
-  /**
-   * GET /inventory - Get all inventory with filters
-   * Query params: productCodeId, lowStock, isActive, page, limit
-   */
-  @Get()
-  async findAll(@Query() query: FilterInventoryDto) {
-    return this.inventoryService.findAll(query);
-  }
-
-  /**
-   * GET /inventory/low-stock - Get products with low stock
-   */
-  @Get('low-stock')
-  async getLowStockProducts() {
-    return this.inventoryService.getLowStockProducts();
-  }
-
-  /**
-   * GET /inventory/balance - Get stock balance summary
-   */
-  @Get('balance')
-  async getStockBalance() {
-    return this.inventoryService.getStockBalance();
-  }
-
-  /**
-   * GET /inventory/:id - Get inventory by ID
-   */
-  @Get(':id')
-  async findById(@Param('id', ParseIntPipe) id: number) {
-    return this.inventoryService.findById(id);
-  }
-
-  /**
-   * POST /inventory - Create new inventory record
-   */
-  @Post()
-  @HttpCode(HttpStatus.CREATED)
-  async create(@Body() dto: CreateInventoryDto, @Req() req: AuthRequest) {
-    return this.inventoryService.create(dto, req.user.id);
-  }
-
-  /**
-   * PATCH /inventory/:id - Update inventory settings
-   */
-  @Patch(':id')
-  async update(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: UpdateInventoryDto,
-    @Req() req: AuthRequest,
-  ) {
-    return this.inventoryService.update(id, dto, req.user.id);
-  }
-
-  // ==================== TRANSACTION OPERATIONS ====================
-
-  /**
-   * POST /inventory/production - Record production receipt
-   */
-  @Post('production')
-  @HttpCode(HttpStatus.CREATED)
-  async recordProduction(
-    @Body() dto: RecordProductionDto,
-    @Req() req: AuthRequest,
-  ) {
-    return this.inventoryService.recordProduction(dto, req.user.id);
-  }
-
-  /**
-   * POST /inventory/waste - Record waste/damaged products
-   */
-  @Post('waste')
-  @HttpCode(HttpStatus.CREATED)
-  async recordWaste(@Body() dto: RecordWasteDto, @Req() req: AuthRequest) {
-    return this.inventoryService.recordWaste(dto, req.user.id);
-  }
-
-  /**
-   * POST /inventory/adjust - Stock adjustment (stock opname)
-   */
-  @Post('adjust')
-  @HttpCode(HttpStatus.CREATED)
-  async adjustStock(@Body() dto: AdjustStockDto, @Req() req: AuthRequest) {
-    return this.inventoryService.adjustStock(dto, req.user.id);
-  }
-
-  /**
-   * GET /inventory/transactions - Get transaction history
-   * Query params: productCodeId, transactionType, startDate, endDate, orderId, productionBatchNumber, page, limit
-   */
-  @Get('transactions/history')
-  async getTransactionHistory(@Query() query: FilterTransactionsDto) {
-    return this.inventoryService.getTransactionHistory(query);
-  }
+  // ==================== LEGACY ENDPOINTS REMOVED ====================
+  // Removed 10 unused endpoints:
+  // - GET /inventory (findAll)
+  // - GET /inventory/low-stock (getLowStockProducts)
+  // - GET /inventory/balance (getStockBalance)
+  // - GET /inventory/:id (findById)
+  // - POST /inventory (create)
+  // - PATCH /inventory/:id (update)
+  // - POST /inventory/production (recordProduction)
+  // - POST /inventory/waste (recordWaste)
+  // - POST /inventory/adjust (adjustStock)
+  // - GET /inventory/transactions/history (getTransactionHistory)
+  //
+  // These were NOT used by frontend. Use these instead:
+  // - Daily inventory operations: /inventory/daily/*
+  // - Transaction operations: /inventory/transactions/* (from InventoryTransactionService)
 
   // ==================== ADMIN OPERATIONS (Daily Reset) ====================
 
@@ -489,6 +456,7 @@ export class InventoryController {
    *   "summary": { totalItems, sufficientItems, insufficientItems, ... }
    * }
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
   @Post('check-stock')
   @HttpCode(HttpStatus.OK)
   async checkStock(@Body() checkStockDto: CheckStockDto) {

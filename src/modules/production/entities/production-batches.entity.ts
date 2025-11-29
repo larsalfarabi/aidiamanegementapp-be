@@ -12,7 +12,7 @@ import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { Users } from '../../users/entities/users.entity';
 import { ProductionMaterialUsage } from './production-material-usage.entity';
 import { ProductionStageTracking } from './production-stage-tracking.entity';
-import { InventoryTransactions } from '../../inventory/entity/inventory_transactions.entity';
+import { InventoryTransactions } from '../../inventory/entity/inventory-transactions.entity';
 
 /**
  * Production Batch Status

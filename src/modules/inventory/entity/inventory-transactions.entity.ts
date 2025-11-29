@@ -36,12 +36,14 @@ export enum TransactionType {
   PRODUCTION_IN = 'PRODUCTION_IN', // Hasil produksi masuk ke gudang
   REPACK_IN = 'REPACK_IN', // Barang hasil repacking (target product)
   SAMPLE_RETURN = 'SAMPLE_RETURN', // Sample dikembalikan
+  PURCHASE = 'PURCHASE', // Pembelian material (Bahan Baku, Pembantu, Kemasan)
 
   // OUT Transactions (negative quantity)
   SALE = 'SALE', // Penjualan ke customer (dari invoice date)
   REPACK_OUT = 'REPACK_OUT', // Barang untuk repacking (source product)
   SAMPLE_OUT = 'SAMPLE_OUT', // Sample untuk promosi/demo/test
   WASTE = 'WASTE', // Barang rusak/kadaluarsa
+  PRODUCTION_MATERIAL_OUT = 'PRODUCTION_MATERIAL_OUT', // Material keluar untuk produksi
 
   // Special Transactions
   ADJUSTMENT = 'ADJUSTMENT', // Koreksi stok (bisa + atau -)
