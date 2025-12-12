@@ -9,6 +9,7 @@ import {
 import { BaseEntity } from '../../../common/entities/base.entity';
 import { ProductionFormulas } from './production-formulas.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
+import { Products } from '../../products/entity/products.entity';
 import { Users } from '../../users/entities/users.entity';
 import { ProductionMaterialUsage } from './production-material-usage.entity';
 import { ProductionStageTracking } from './production-stage-tracking.entity';
@@ -40,26 +41,43 @@ export enum QCStatus {
  * ProductionBatches Entity
  * Records actual production batch execution
  *
+ * CRITICAL CHANGE (Dec 2024): Batch now product-based with multi-size support
+ *
+ * OLD SYSTEM:
+ * - Batch produces one specific product size (productCodeId)
+ * - Simple: plannedQuantity, actualQuantity for single SKU
+ *
+ * NEW SYSTEM:
+ * - Batch produces concentrate for a product concept (productId)
+ * - Bottling stage distributes to multiple sizes (ProductionBottlingOutput)
+ * - productCodeId nullable (set later during bottling, or kept for single-size batches)
+ *
  * Business Rules:
  * - One batch = one production run based on a formula
- * - Tracks planned vs actual quantity
- * - Calculates yield and waste percentage
+ * - Tracks planned vs actual concentrate volume (liters)
+ * - Multi-size batches: bottling outputs tracked separately
+ * - Single-size batches: productCodeId set, no bottling outputs
  * - Links to material usage and stage tracking
  * - QC checkpoint before inventory update
  * - Cost calculation after completion
  *
- * Flow:
- * 1. PLANNED → Create batch with formula
+ * Flow (Multi-size batch):
+ * 1. PLANNED → Create batch with formula (productId)
  * 2. IN_PROGRESS → Record material usage & stages
- * 3. QC_PENDING → Production done, waiting QC
- * 4. COMPLETED → QC pass → Create PRODUCTION_IN transaction
- * 5. REJECTED → QC fail → No inventory update
+ * 3. QC_PENDING → Concentrate done, waiting QC
+ * 4. COMPLETED → QC pass → Bottling stage (create ProductionBottlingOutput records)
+ * 5. Each bottling output → Create PRODUCTION_IN transaction
+ *
+ * Flow (Single-size batch - backward compatible):
+ * 1. PLANNED → Create batch with productCodeId
+ * 2-5. Same as old system
  */
 @Entity({ name: 'production_batches', synchronize: false })
 @Index(['batchNumber'], { unique: true })
 @Index(['productionDate'])
 @Index(['status'])
 @Index(['formulaId'])
+@Index(['productId'])
 @Index(['productCodeId'])
 export class ProductionBatches extends BaseEntity {
   // Batch Identification
@@ -88,21 +106,34 @@ export class ProductionBatches extends BaseEntity {
   @JoinColumn({ name: 'formulaId' })
   formula: ProductionFormulas;
 
+  // NEW: Product concept reference
   @Column({
-    comment: 'Finished product produced',
+    comment: 'Product concept produced (e.g., MANGO JUICE - PREMIUM - RTD)',
   })
-  productCodeId: number;
+  productId: number;
 
-  @ManyToOne(() => ProductCodes, { eager: true })
+  @ManyToOne(() => Products, { eager: true })
+  @JoinColumn({ name: 'productId' })
+  product: Products;
+
+  // NULLABLE: Specific product size (for single-size batches or legacy)
+  @Column({
+    nullable: true,
+    comment: 'OPTIONAL: Specific product size (null for multi-size batches)',
+  })
+  productCodeId: number | null;
+
+  @ManyToOne(() => ProductCodes, { eager: false })
   @JoinColumn({ name: 'productCodeId' })
-  productCode: ProductCodes;
+  productCode: ProductCodes | null;
 
   // Production Planning
   @Column({
     type: 'decimal',
     precision: 10,
     scale: 2,
-    comment: 'Planned quantity to produce (based on formula batch size)',
+    comment:
+      'Planned quantity (concentrate volume for multi-size, bottles for single-size)',
   })
   plannedQuantity: number;
 
@@ -283,7 +314,6 @@ export class ProductionBatches extends BaseEntity {
     cascade: true,
   })
   stages: ProductionStageTracking[];
-
   // Audit
   @Column({ nullable: true })
   createdBy: number;

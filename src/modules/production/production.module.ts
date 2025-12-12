@@ -10,6 +10,7 @@ import {
   ProductionStageTracking,
 } from './entities';
 import { ProductCodes } from '../products/entity/product_codes.entity';
+import { Products } from '../products/entity/products.entity';
 import { ProductCategories } from '../products/entity/product_categories.entity';
 import { InventoryTransactions } from '../inventory/entity/inventory-transactions.entity';
 import { InventoryModule } from '../inventory/inventory.module';
@@ -26,6 +27,7 @@ import { RedisModule } from '../redis/redis.module';
       ProductionMaterialUsage,
       ProductionStageTracking,
       ProductCodes,
+      Products, // NEW: Product concept entity
       ProductCategories,
       InventoryTransactions,
       Users,

@@ -28,6 +28,7 @@ import { ProductCodeQueryDto, QueryProductDto } from './dto/products.dto';
 
 @Injectable()
 export class ProductsService extends BaseResponse {
+  // Service for managing product codes and related entities
   constructor(
     @InjectRepository(ProductCodes)
     private readonly productCodeRepo: Repository<ProductCodes>,
@@ -46,12 +47,12 @@ export class ProductsService extends BaseResponse {
   async findAll(query: ProductCodeQueryDto): Promise<ResponsePagination> {
     const { pageSize, limit, page, mainCategory, subCategoryId, size } = query;
 
-    // ✅ UPDATED: Menggunakan relasi baru (product, category, size)
+    // ✅ SWAPPED STRUCTURE: pc.category = Main Category, products.category = Sub Category
     const queryBuilder = this.productCodeRepo
       .createQueryBuilder('pc')
       .leftJoin('pc.product', 'products')
-      .leftJoin('products.category', 'mainCategory')
-      .leftJoin('pc.category', 'subCategory')
+      .leftJoinAndSelect('pc.category', 'mainCategory') // ProductCodes.category = Main Category NOW
+      .leftJoin('products.category', 'subCategory') // Products.category = Sub Category NOW
       .leftJoin('pc.size', 'productSizes')
       .where('pc.isDeleted = :isDeleted', {
         isDeleted: false,
@@ -103,7 +104,7 @@ export class ProductsService extends BaseResponse {
   }
 
   async findById(id: number) {
-    // ✅ UPDATED: Menggunakan relasi baru dengan main category dari Products
+    // ✅ SWAPPED STRUCTURE: pc.category = Main Category, products.category = Sub Category
     const queryBuilder = this.productCodeRepo
       .createQueryBuilder('pc')
       .select([
@@ -117,12 +118,12 @@ export class ProductsService extends BaseResponse {
         'products.productType',
         'products.imageUrl',
         'products.isActive',
-        'mainCategory.id', // ✅ Main category dari Products table
+        'mainCategory.id', // ✅ Main category dari ProductCodes table
         'mainCategory.name',
         'mainCategory.description',
-        'productCategories.id', // Sub-category dari ProductCodes table
-        'productCategories.name',
-        'productCategories.description',
+        'subCategory.id', // Sub-category dari Products table
+        'subCategory.name',
+        'subCategory.description',
         'productSizes.id',
         'productSizes.sizeValue',
         'productSizes.unitOfMeasure',
@@ -135,8 +136,8 @@ export class ProductsService extends BaseResponse {
         'updated_user.firstName',
       ])
       .leftJoin('pc.product', 'products')
-      .leftJoin('products.category', 'mainCategory') // ✅ Join main category
-      .leftJoin('pc.category', 'productCategories') // Sub-category
+      .leftJoinAndSelect('pc.category', 'mainCategory') // ProductCodes.category = Main Category NOW
+      .leftJoin('products.category', 'subCategory') // Products.category = Sub Category NOW
       .leftJoin('pc.size', 'productSizes')
       .leftJoin('pc.createdBy', 'created_user')
       .leftJoin('pc.updatedBy', 'updated_user')
@@ -157,11 +158,45 @@ export class ProductsService extends BaseResponse {
   async createProductCode(
     payload: CreateProductCodeDto,
   ): Promise<ResponseSuccess> {
-    const check = await this.productCodeRepo.findOne({
+    // Validation 1: Check if productCode already exists
+    const checkProductCode = await this.productCodeRepo.findOne({
       where: { productCode: payload.productCode },
     });
-    if (check) {
+    if (checkProductCode) {
       throw new ConflictException('Product code sudah ada');
+    }
+
+    // ✅ ANTI-DUPLICATION: Check if combination (productId + categoryId + sizeId) already exists
+    // This prevents duplicate ProductCodes with same product, category, and size
+    const checkDuplicate = await this.productCodeRepo.findOne({
+      where: {
+        product: { id: payload.product },
+        category: { id: payload.category },
+        size: { id: payload.size },
+        isDeleted: false,
+      },
+      relations: ['product', 'category', 'size'],
+    });
+
+    if (checkDuplicate) {
+      const productDetails = await this.productRepo.findOne({
+        where: { id: payload.product },
+        relations: ['category'],
+      });
+      const categoryDetails = await this.productCategoryRepo.findOne({
+        where: { id: payload.category },
+      });
+      const sizeDetails = await this.productSizeRepo.findOne({
+        where: { id: payload.size },
+      });
+
+      throw new ConflictException(
+        `Product code dengan kombinasi yang sama sudah ada: ` +
+          `${productDetails?.name || 'Unknown'} - ` +
+          `${productDetails?.category?.name || 'No SubCategory'} (${categoryDetails?.name || 'Unknown'}) - ` +
+          `${sizeDetails?.sizeValue || 'Unknown'} ${sizeDetails?.unitOfMeasure || ''}. ` +
+          `Product code: ${checkDuplicate.productCode}`,
+      );
     }
 
     // ✅ UPDATED: Menggunakan relasi baru (product, category, size)
@@ -212,10 +247,141 @@ export class ProductsService extends BaseResponse {
     return this._success(`Berhasil mengupdate product code dengan ID ${id}`);
   }
 
+  /**
+   * Check inventory status before delete
+   * ✅ UPDATED: Check stok akhir from daily_inventory OR inventory_transactions
+   * Strategy:
+   * 1. Try daily_inventory first (most accurate, latest closing stock)
+   * 2. If no daily_inventory record exists, aggregate from inventory_transactions
+   * Returns: hasActiveStock, hasHistory, currentStock, transactionCount
+   */
+  async checkInventoryStatus(id: number): Promise<ResponseSuccess> {
+    const productCode = await this.productCodeRepo.findOne({
+      where: { id },
+      select: ['id', 'productCode'],
+    });
+
+    if (!productCode) {
+      return this._fail('Kode barang tidak ditemukan', 404);
+    }
+
+    // ✅ Get today's date in WIB timezone (UTC+7)
+    const now = new Date();
+    const wibOffset = 7 * 60; // WIB is UTC+7
+    const wibTime = new Date(now.getTime() + wibOffset * 60 * 1000);
+    const todayStr = wibTime.toISOString().split('T')[0]; // YYYY-MM-DD format in WIB
+
+    // ✅ Strategy 1: Try to get latest stok akhir from daily_inventory
+    const dailyStockQuery = `
+      SELECT 
+        COALESCE(stokAkhir, 0) as current_stock,
+        businessDate
+      FROM daily_inventory
+      WHERE productCodeId = ? 
+        AND deletedAt IS NULL
+      ORDER BY businessDate DESC
+      LIMIT 1
+    `;
+
+    // ✅ Strategy 2: Fallback - aggregate from inventory_transactions
+    const transactionAggregateQuery = `
+      SELECT 
+        COALESCE(
+          SUM(CASE 
+            WHEN transactionType IN ('PRODUCTION_IN', 'PURCHASE', 'REPACK_IN', 'SAMPLE_RETURN', 'ADJUSTMENT_IN') 
+            THEN quantity 
+            ELSE 0 
+          END), 0
+        ) as total_in,
+        COALESCE(
+          SUM(CASE 
+            WHEN transactionType IN ('SALE', 'REPACK_OUT', 'SAMPLE_OUT', 'PRODUCTION_OUT', 'ADJUSTMENT_OUT') 
+            THEN ABS(quantity) 
+            ELSE 0 
+          END), 0
+        ) as total_out,
+        COUNT(*) as transaction_count
+      FROM inventory_transactions
+      WHERE productCodeId = ? AND deletedAt IS NULL
+    `;
+
+    const [stockResult, transactionResult] = await Promise.all([
+      this.productCodeRepo.query(dailyStockQuery, [id]),
+      this.productCodeRepo.query(transactionAggregateQuery, [id]),
+    ]);
+
+    // Determine current stock: use daily_inventory if exists, else use transaction aggregate
+    let currentStock = 0;
+    let checkDate: string | Date = todayStr;
+    let source = 'none';
+
+    if (stockResult.length > 0 && stockResult[0].current_stock !== null) {
+      // Use daily_inventory data
+      currentStock = parseFloat(stockResult[0].current_stock || 0);
+      checkDate = stockResult[0].businessDate;
+      source = 'daily_inventory';
+    } else if (transactionResult.length > 0) {
+      // Fallback: calculate from transactions
+      const totalIn = parseFloat(transactionResult[0].total_in || 0);
+      const totalOut = parseFloat(transactionResult[0].total_out || 0);
+      currentStock = totalIn - totalOut;
+      source = 'inventory_transactions';
+    }
+
+    const transactionCount = parseInt(
+      transactionResult[0]?.transaction_count || 0,
+    );
+    const hasActiveStock = currentStock > 0;
+    const hasHistory = transactionCount > 0;
+
+    // Format checkDate properly
+    let formattedCheckDate: string;
+    if (checkDate instanceof Date) {
+      formattedCheckDate = checkDate.toISOString().split('T')[0];
+    } else if (typeof checkDate === 'string') {
+      formattedCheckDate = checkDate;
+    } else {
+      formattedCheckDate = todayStr;
+    }
+
+    return this._success('Status inventory berhasil diambil', {
+      productCodeId: id,
+      productCode: productCode.productCode,
+      hasActiveStock,
+      hasHistory,
+      currentStock: parseFloat(currentStock.toFixed(2)),
+      transactionCount,
+      canDelete: !hasActiveStock, // ✅ Validasi berdasarkan stok aktual
+      warningLevel: hasActiveStock
+        ? 'danger'
+        : hasHistory
+          ? 'warning'
+          : 'normal',
+      checkDate: formattedCheckDate,
+      source, // Debug info: 'daily_inventory', 'inventory_transactions', or 'none'
+    });
+  }
+
   async deleteProductCode(
     id: number,
     payload: DeleteProductCodeDto,
   ): Promise<ResponseSuccess> {
+    // Validasi inventory sebelum delete
+    const inventoryStatus = await this.checkInventoryStatus(id);
+
+    if (inventoryStatus.status === 'fail') {
+      return inventoryStatus;
+    }
+
+    const { hasActiveStock, currentStock, productCode } = inventoryStatus.data;
+
+    // PREVENT: Jika masih ada stok aktif
+    if (hasActiveStock) {
+      return this._fail(
+        `Kode barang ${productCode} tidak dapat dihapus karena masih memiliki stok aktif sebanyak ${currentStock}. Silakan kosongkan stok terlebih dahulu melalui transaksi inventory.`,
+        400,
+      );
+    }
     const result = await this.productCodeRepo.update(id, payload);
 
     if (result.affected === 0)
@@ -228,13 +394,18 @@ export class ProductsService extends BaseResponse {
 
   // * --- PRODUCTS --- */
   async findAllProducts(query: QueryProductDto): Promise<ResponsePagination> {
-    const { pageSize, limit, page, mainCategory } = query;
+    const { pageSize, limit, page, subCategory } = query;
+
+    // Build where clause dynamically
+    const whereClause: any = {};
+
+    if (subCategory) {
+      // Filter by sub-category name (level 1)
+      whereClause.category = { name: subCategory };
+    }
+
     const [result, count] = await this.productRepo.findAndCount({
-      where: {
-        category: {
-          name: mainCategory,
-        },
-      },
+      where: whereClause,
       select: ['id', 'name', 'productType', 'imageUrl', 'isActive'],
       relations: ['category'],
       // take: pageSize,
@@ -272,24 +443,33 @@ export class ProductsService extends BaseResponse {
       );
     }
 
-    // ✅ CRITICAL FIX: Determine main category ID and name
-    // Products.category should ALWAYS point to main category (level 0)
-    // Sub-category relationship is stored in ProductCodes.category
-    let mainCategoryId: number;
-    let mainCategoryName: string;
+    // ✅ SWAPPED STRUCTURE: Products.category should use SUB category (level 1)
+    // Main category relationship is now stored in ProductCodes.category
+    let subCategoryId: number;
+    let subCategoryName: string;
 
-    if (category.level > 0 && category.parent) {
-      // This is a sub-category - use parent (main category)
-      mainCategoryId = category.parent.id;
-      mainCategoryName = category.parent.name.toUpperCase();
-    } else {
-      // This is already a main category
-      mainCategoryId = category.id;
-      mainCategoryName = category.name.toUpperCase();
+    if (category.level !== 1) {
+      throw new BadRequestException(
+        `Invalid category. Products must use SUB category (level 1 - Buffet, Premium, Freshly). ` +
+          `Category "${category.name}" has level ${category.level}.`,
+      );
     }
 
-    // Validate productType requirement based on main category
-    const requiresProductType = mainCategoryName === 'BARANG JADI';
+    // This is a sub-category - use directly
+    subCategoryId = category.id;
+    subCategoryName = category.name.toUpperCase();
+
+    // Get parent (main category) for validation
+    const parentCategory = category.parent;
+    if (!parentCategory) {
+      throw new BadRequestException(
+        `Sub-category "${category.name}" has no parent category.`,
+      );
+    }
+
+    // Validate productType requirement based on parent main category
+    const requiresProductType =
+      parentCategory.name.toUpperCase() === 'BARANG JADI';
 
     if (requiresProductType && !payload.productType) {
       throw new ConflictException(
@@ -297,10 +477,11 @@ export class ProductsService extends BaseResponse {
       );
     }
 
-    // ✅ FIXED: Query using MAIN category ID, not sub-category
+    // ✅ ANTI-DUPLICATION: Check if combination (name + categoryId + productType) already exists
     const whereClause: any = {
       name: payload.name,
-      category: { id: mainCategoryId }, // Use main category ID
+      category: { id: subCategoryId }, // Use sub-category ID
+      deletedAt: null, // Only check non-deleted products
     };
     if (payload.productType !== undefined) {
       whereClause.productType = payload.productType;
@@ -312,17 +493,18 @@ export class ProductsService extends BaseResponse {
     });
 
     if (existingProduct) {
+      // Product already exists - return existing instead of creating duplicate
       return this._success(
-        'Product sudah ada, menggunakan product yang sudah ada',
+        `Product sudah ada: ${existingProduct.name} - ${existingProduct.category?.name || 'No SubCategory'} - ${existingProduct.productType || 'No Type'}`,
         existingProduct,
       );
     }
 
-    // ✅ FIXED: Create new product with MAIN category ID
+    // ✅ FIXED: Create new product with SUB category ID
     const newProduct = await this.productRepo.save({
       name: payload.name,
       productType: payload.productType ?? null,
-      category: { id: mainCategoryId }, // Use main category ID
+      category: { id: subCategoryId }, // Use sub-category ID
       isActive: true,
       createdBy: payload.createdBy,
     });

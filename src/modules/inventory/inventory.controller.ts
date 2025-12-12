@@ -27,6 +27,7 @@ import {
   FilterInventoryDto,
   FilterTransactionsDto,
   RecordProductionDto,
+  CreatePurchaseDto,
   RecordWasteDto,
   AdjustStockDto,
   FilterDailyInventoryDto,
@@ -199,6 +200,21 @@ export class InventoryController {
   }
 
   /**
+   * POST /inventory/transactions/purchase
+   * Record material purchase (Bahan Baku, Pembantu, Kemasan)
+   * Updates: daily_inventory.barangMasuk++
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.CREATE}`)
+  @Post('transactions/purchase')
+  @HttpCode(HttpStatus.CREATED)
+  async recordPurchaseTransaction(
+    @Body() dto: CreatePurchaseDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.transactionService.recordPurchase(dto, req.user.id);
+  }
+
+  /**
    * POST /inventory/transactions/sale
    * Record sale/order fulfillment
    * Updates: daily_inventory.dipesan++
@@ -274,6 +290,34 @@ export class InventoryController {
       req.user.id,
       dto.reason,
     );
+  }
+
+  /**
+   * POST /inventory/transactions/adjustment
+   * Manual stock adjustment - Directly modifies stokAkhir
+   *
+   * Use cases:
+   * - Stock opname corrections (hasil stock opname tidak sesuai sistem)
+   * - Damaged/expired goods removal (barang rusak/kadaluarsa)
+   * - Missing stock correction (selisih fisik vs sistem)
+   * - Data entry error fixes
+   *
+   * Impact: stokAkhir baru = stokAkhir lama + adjustmentQuantity
+   * - Positive (+): Increase stock (tambah stok)
+   * - Negative (-): Decrease stock (kurangi stok)
+   *
+   * Body: { productCodeId, adjustmentQuantity, reason, notes?, performedBy? }
+   *
+   * Returns: { transactionNumber, productCode, stockBefore, adjustmentQuantity, stockAfter }
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.UPDATE}`)
+  @Post('transactions/adjustment')
+  @HttpCode(HttpStatus.CREATED)
+  async adjustStockTransaction(
+    @Body() dto: AdjustStockDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.transactionService.adjustStock(dto, req.user.id);
   }
 
   /**

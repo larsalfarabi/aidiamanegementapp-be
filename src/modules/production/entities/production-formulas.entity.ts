@@ -8,6 +8,7 @@ import {
 } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
+import { Products } from '../../products/entity/products.entity';
 import { Users } from '../../users/entities/users.entity';
 import { FormulaMaterials } from './formula-materials.entity';
 import { ProductionBatches } from './production-batches.entity';
@@ -16,21 +17,36 @@ import { ProductionBatches } from './production-batches.entity';
  * ProductionFormulas Entity
  * Master Formula for Production with Versioning Support
  *
+ * CRITICAL CHANGE (Dec 2024): Formula now product-based, not productCode-based
+ *
+ * OLD SYSTEM:
+ * - Formula tied to specific ProductCode (e.g., JAMBU-FRESHLY-250ML)
+ * - One formula = One product size only
+ * - Inflexible for multi-size bottling
+ *
+ * NEW SYSTEM:
+ * - Formula tied to Product concept (e.g., JAMBU JUICE - FRESHLY - RTD)
+ * - One formula can produce multiple product sizes
+ * - Bottling stage determines final distribution
+ *
  * Business Rules:
- * - One formula per finished product (e.g., Jambu 250ML)
+ * - One formula per product concept (product name + category + type)
  * - Supports versioning (v1.0, v1.1, v2.0)
  * - Only one version can be active at a time
- * - Tracks expected yield percentage for waste monitoring
+ * - productCodeId kept for backward compatibility (nullable)
  * - Links to FormulaMaterials (BOM - Bill of Materials)
  *
  * Example:
- * Formula: Jambu 250ML v1.0
- * - Materials: 10kg Jambu per batch, 5kg Gula, 2L Concentrate Base
- * - Batch quantity determined at production time via plannedQuantity
- * - Expected Yield: 95% (5% waste normal)
+ * Formula: MANGO JUICE - PREMIUM - RTD v1.0
+ * - Materials: 10kg Mango per batch, 5kg Sugar, 2L Concentrate Base
+ * - Produces 40L concentrate
+ * - Bottling outputs:
+ *   → 10 bottles × 1L (MANGO-PREMIUM-1L)
+ *   → 5 bottles × 250ML (MANGO-PREMIUM-250ML)
+ *   → 10 bottles × 5L (MANGO-PREMIUM-5L)
  */
 @Entity({ name: 'production_formulas', synchronize: false })
-@Index(['productCodeId', 'version'], { unique: true }) // One version per product
+@Index(['productId', 'version'], { unique: true }) // One version per product concept
 @Index(['isActive']) // Quick lookup for active formulas
 @Index(['formulaCode']) // Quick lookup by code
 export class ProductionFormulas extends BaseEntity {
@@ -38,7 +54,7 @@ export class ProductionFormulas extends BaseEntity {
   @Column({
     unique: true,
     length: 100,
-    comment: 'Unique formula code (e.g., FORMULA-JAMBU-250ML-v1.0)',
+    comment: 'Unique formula code (e.g., FORMULA-MANGO-PREMIUM-RTD-v1.0)',
   })
   formulaCode: string;
 
@@ -54,15 +70,28 @@ export class ProductionFormulas extends BaseEntity {
   })
   version: string;
 
-  // Product Reference (Finished Goods)
+  // Product Reference (NEW: Product concept, not specific size)
   @Column({
-    comment: 'Finished product that this formula produces',
+    comment:
+      'Product concept that this formula produces (e.g., MANGO JUICE - PREMIUM - RTD)',
   })
-  productCodeId: number;
+  productId: number;
 
-  @ManyToOne(() => ProductCodes, { eager: true })
+  @ManyToOne(() => Products, { eager: true })
+  @JoinColumn({ name: 'productId' })
+  product: Products;
+
+  // Legacy Reference (kept for backward compatibility)
+  @Column({
+    nullable: true,
+    comment:
+      'LEGACY: Original product code reference (kept for migration tracking)',
+  })
+  productCodeId: number | null;
+
+  @ManyToOne(() => ProductCodes, { eager: false })
   @JoinColumn({ name: 'productCodeId' })
-  productCode: ProductCodes;
+  productCode: ProductCodes | null;
 
   // Production Metadata
   @Column({

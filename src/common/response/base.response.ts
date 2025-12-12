@@ -27,6 +27,14 @@ class BaseResponse {
       },
     };
   }
+
+  _fail(message: string, statusCode?: number): any {
+    return {
+      status: 'Error',
+      message: message,
+      statusCode: statusCode || 400,
+    };
+  }
 }
 
 export default BaseResponse;

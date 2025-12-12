@@ -62,6 +62,13 @@ export class ProductsController {
     return this.productsService.updateProductCode(id, payload);
   }
 
+  // Check inventory status before delete
+  @Get(':id/inventory-status')
+  @RequirePermissions(`${Resource.PRODUCT}:${Action.VIEW}`)
+  async checkInventoryStatus(@Param('id', ParseIntPipe) id: number) {
+    return this.productsService.checkInventoryStatus(id);
+  }
+
   @Delete(':id')
   @RequirePermissions(`${Resource.PRODUCT}:${Action.DELETE}`)
   async deleteProductCode(

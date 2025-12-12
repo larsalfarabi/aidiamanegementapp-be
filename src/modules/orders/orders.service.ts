@@ -21,6 +21,7 @@ import { CreateOrderDto, OrderFilterDto } from './dto/orders.dto';
 import { InvoiceNumberGenerator } from './utils/invoice-number-generator';
 import { DeleteOrderDto } from './dto/orders.dto';
 import { InventoryTransactionService } from '../inventory/services/inventory-transaction.service';
+import { NotificationEventEmitter } from '../notifications/services/notification-event-emitter.service';
 
 @Injectable()
 export class OrdersService extends BaseResponse {
@@ -37,7 +38,8 @@ export class OrdersService extends BaseResponse {
     private readonly customerCatalogRepo: Repository<CustomerProductCatalogs>,
     @InjectRepository(ProductCodes)
     private readonly productCodesRepo: Repository<ProductCodes>,
-    private readonly inventoryTransactionService: InventoryTransactionService, // ✅ Inject inventory service
+    private readonly inventoryTransactionService: InventoryTransactionService,
+    private readonly notificationEventEmitter: NotificationEventEmitter,
   ) {
     super();
   }
@@ -135,7 +137,7 @@ export class OrdersService extends BaseResponse {
           'size.categoryType',
         ])
         .leftJoin('pc.product', 'product')
-        .leftJoin('pc.category', 'category')
+        .leftJoin('pc.category', 'category') // ✅ SWAPPED: pc.category = Main Category (level 0)
         .leftJoin('pc.size', 'size')
         .where('pc.id = :id', { id: item.productCodeId })
         .andWhere('pc.isActive = :isActive', { isActive: true })
@@ -423,6 +425,14 @@ export class OrdersService extends BaseResponse {
     // Return created order with items
     const createdOrder = await this.findOne(savedOrder.id);
 
+    // ✅ Emit ORDER_CREATED notification
+    await this.notificationEventEmitter.emitOrderCreated({
+      orderId: savedOrder.id,
+      orderNumber: savedOrder.orderNumber,
+      customerName: savedOrder.customerName,
+      grandTotal: savedOrder.grandTotal,
+    });
+
     return this._success('Order created successfully', createdOrder.data);
   }
 
@@ -558,6 +568,35 @@ export class OrdersService extends BaseResponse {
   }
 
   async delete(id: number, payload: DeleteOrderDto): Promise<ResponseSuccess> {
+    // Validasi: Order hanya boleh dihapus jika tanggal invoice >= hari ini
+    const orderCheck = await this.ordersRepo.findOne({
+      where: { id },
+      select: ['id', 'orderNumber', 'invoiceDate'],
+    });
+
+    if (!orderCheck) {
+      throw new NotFoundException('Order tidak ditemukan');
+    }
+
+    // Validasi: Harus ada invoice date
+    if (!orderCheck.invoiceDate) {
+      throw new BadRequestException(
+        'Order belum memiliki tanggal invoice dan tidak dapat dihapus.',
+      );
+    }
+
+    // Validasi tanggal invoice
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const invoiceDate = new Date(orderCheck.invoiceDate);
+    invoiceDate.setHours(0, 0, 0, 0);
+
+    if (invoiceDate < today) {
+      throw new BadRequestException(
+        `Invoice tanggal ${invoiceDate.toLocaleDateString('id-ID')} sudah terlewat dan tidak dapat dihapus. Hanya invoice hari ini atau masa depan yang dapat dihapus.`,
+      );
+    }
     // First, get the order with its items to reverse inventory transactions
     const order = await this.ordersRepo.findOne({
       where: { id },
@@ -587,9 +626,7 @@ export class OrdersService extends BaseResponse {
       throw new BadRequestException('deletedBy user ID is required');
     }
 
-    // ✅ Check if invoice date is today (same-day order)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // ✅ Check if invoice date is today (same-day order) - reuse today variable from above
     const invoiceDateOnly = new Date(order.invoiceDate);
     invoiceDateOnly.setHours(0, 0, 0, 0);
 
@@ -645,6 +682,14 @@ export class OrdersService extends BaseResponse {
     this.logger.log(
       `Order ${order.orderNumber} deleted and inventory reversed by user ${userId}`,
     );
+
+    // ✅ Emit ORDER_CANCELLED notification
+    await this.notificationEventEmitter.emitOrderCancelled({
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      customerName: order.customerName,
+      reason: payload.deleteReason || 'Order cancelled',
+    });
 
     return this._success(`Data pesanan dengan ID ${id} berhasil dihapus.`);
   }

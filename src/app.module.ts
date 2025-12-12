@@ -17,8 +17,8 @@ import { OrdersModule } from './modules/orders/orders.module';
 import { InventoryModule } from './modules/inventory/inventory.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { MailModule } from './modules/mail/mail.module';
-import { ProductionModule } from './modules/production/production.module';
 import { redisStore } from 'cache-manager-redis-yet';
+import { ProductionModule } from './modules/production/production.module';
 
 @Module({
   imports: [
@@ -73,8 +73,8 @@ import { redisStore } from 'cache-manager-redis-yet';
     OrdersModule,
     InventoryModule,
     ReportsModule,
-    MailModule,
     ProductionModule,
+    MailModule,
   ],
   controllers: [AppController],
   providers: [AppService],

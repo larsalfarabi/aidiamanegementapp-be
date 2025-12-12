@@ -1,4 +1,5 @@
 export * from './record-production.dto';
+export * from './create-purchase.dto';
 export * from './record-waste.dto';
 export * from './adjust-stock.dto';
 export * from './create-inventory.dto';

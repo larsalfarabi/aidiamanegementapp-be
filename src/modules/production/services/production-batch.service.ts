@@ -89,7 +89,7 @@ export class ProductionBatchService extends BaseResponse {
       // 1. Validate formula exists and is active
       const formula = await this.formulaRepository.findOne({
         where: { id: dto.formulaId },
-        relations: ['productCode'],
+        relations: ['productCode', 'product'],
       });
 
       if (!formula) {
@@ -173,11 +173,12 @@ export class ProductionBatchService extends BaseResponse {
       // 4. Generate batch number
       const batchNumber = await this.generateBatchNumber(productionDate);
 
-      // 4. Create batch with targetLiters as plannedQuantity
+      // 5. Create batch with targetLiters as plannedQuantity
       const batch = this.batchRepository.create({
         batchNumber,
         productionDate,
         formulaId: formula.id,
+        productId: formula.productId, // ✅ FIX: Get productId from formula
         productCodeId: formula.productCodeId,
         plannedQuantity: dto.targetLiters, // This is the "40L" in template
         plannedConcentrate: dto.targetLiters, // Same as target for concentrate
@@ -555,7 +556,8 @@ export class ProductionBatchService extends BaseResponse {
 
           // INVENTORY INTEGRATION: Add finished goods to inventory (QC PASS only)
           // Only add the quantity that passed QC to finished goods inventory
-          if (batch.qcPassedQuantity > 0) {
+          // NOTE: For multi-size batches (productCodeId = null), inventory handled via bottlingOutputs
+          if (batch.qcPassedQuantity > 0 && batch.productCodeId) {
             this.logger.log(
               `Adding ${batch.qcPassedQuantity} finished goods to inventory for batch ${batch.batchNumber}`,
             );
@@ -571,6 +573,10 @@ export class ProductionBatchService extends BaseResponse {
 
             this.logger.log(
               `Finished goods added to inventory successfully for batch ${batch.batchNumber}`,
+            );
+          } else if (!batch.productCodeId) {
+            this.logger.log(
+              `Batch ${batch.batchNumber} is multi-size batch (productCodeId = null). Inventory will be recorded via bottling outputs.`,
             );
           }
         } else if (batch.qcStatus === QCStatus.FAIL) {
@@ -889,4 +895,5 @@ export class ProductionBatchService extends BaseResponse {
       throw error;
     }
   }
+
 }

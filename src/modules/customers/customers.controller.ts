@@ -39,6 +39,12 @@ export class CustomersController {
     return this.customersService.findAll(query);
   }
 
+  @Get('codes/all')
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.VIEW}`)
+  async findAllCodes() {
+    return this.customersService.findAllCodes();
+  }
+
   @Get(':id')
   @RequirePermissions(`${Resource.CUSTOMER}:${Action.VIEW}`)
   async findOne(@Param('id') id: string) {

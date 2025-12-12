@@ -1,5 +1,9 @@
 import BaseResponse from '../../common/response/base.response';
-import { Injectable, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  ConflictException,
+  BadRequestException,
+} from '@nestjs/common';
 import {
   ResponsePagination,
   ResponseSuccess,
@@ -19,6 +23,7 @@ import {
   CreateCustomerProductCatalogDto,
   CreateCustomerDto,
 } from './dto/customers.dto';
+import { Orders } from '../orders/entity/orders.entity';
 
 @Injectable()
 export class CustomersService extends BaseResponse {
@@ -27,6 +32,8 @@ export class CustomersService extends BaseResponse {
     private readonly customersRepo: Repository<Customers>,
     @InjectRepository(CustomerProductCatalogs)
     private readonly customerProductCatalogRepo: Repository<CustomerProductCatalogs>,
+    @InjectRepository(Orders)
+    private readonly ordersRepo: Repository<Orders>,
   ) {
     super();
   }
@@ -79,6 +86,24 @@ export class CustomersService extends BaseResponse {
     );
   }
 
+  async findAllCodes(): Promise<ResponseSuccess> {
+    // Get all customer codes (including soft-deleted) for code generation
+    const result = await this.customersRepo.query(`
+    SELECT customerCode 
+    FROM customers 
+    ORDER BY customerCode ASC
+  `);
+
+    const customerCodes = result.map(
+      (item: { customerCode: string }) => item.customerCode,
+    );
+
+    return this._success(
+      'Berhasil mengambil semua kode customer',
+      customerCodes,
+    );
+  }
+
   async findOne(id: number): Promise<ResponseSuccess> {
     const result = await this.customersRepo.findOne({
       where: { id },
@@ -89,6 +114,20 @@ export class CustomersService extends BaseResponse {
     return this._success('Berhasil mengambil data customer', result);
   }
   async create(payload: CreateCustomerDto) {
+    // Check if customer code already exists (only for non-deleted customers)
+    const existingCustomer = await this.customersRepo.findOne({
+      where: {
+        customerCode: payload.customerCode,
+        isDeleted: false,
+      },
+    });
+
+    if (existingCustomer) {
+      throw new ConflictException(
+        `Kode customer "${payload.customerCode}" sudah digunakan. Silakan refresh halaman untuk mendapatkan kode baru.`,
+      );
+    }
+
     const customer = this.customersRepo.create({
       ...payload,
       createdBy: payload.createdBy as any,
@@ -140,6 +179,8 @@ export class CustomersService extends BaseResponse {
           'product.id',
           'product.name',
           'product.productType',
+          'subCategory.id',
+          'subCategory.name',
           'category.id',
           'category.name',
           'size.id',
@@ -147,7 +188,8 @@ export class CustomersService extends BaseResponse {
         ])
         .leftJoin('cpc.productCode', 'pc')
         .leftJoin('pc.product', 'product')
-        .leftJoin('pc.category', 'category')
+        .leftJoin('pc.category', 'category') // ✅ SWAPPED: pc.category = Main Category (level 0)
+        .leftJoin('product.category', 'subCategory')
         .leftJoin('pc.size', 'size')
         .where('cpc.customerId = :customerId', { customerId })
         .andWhere('cpc.isActive = :isActive', { isActive: true })
@@ -188,6 +230,27 @@ export class CustomersService extends BaseResponse {
     id: number,
     payload: DeleteCustomerDto,
   ): Promise<ResponseSuccess> {
+    // Cek apakah customer memiliki riwayat transaksi invoice
+    const invoiceCount = await this.ordersRepo
+      .createQueryBuilder('order')
+      .where('order.customerId = :customerId', { customerId: id })
+      .andWhere('order.invoiceNumber IS NOT NULL')
+      .andWhere('(order.isDeleted IS NULL OR order.isDeleted = false)')
+      .getCount();
+
+    // Jika ada riwayat invoice, tolak penghapusan
+    if (invoiceCount > 0) {
+      throw new BadRequestException({
+        message: 'Customer tidak dapat dihapus',
+        reason: 'CUSTOMER_HAS_INVOICE_HISTORY',
+        details: {
+          customerId: id,
+          invoiceCount,
+        },
+        suggestion: 'Silakan nonaktifkan customer sebagai gantinya',
+      });
+    }
+
     const result = await this.customersRepo.update(id, {
       isDeleted: true,
       deletedBy: payload.deletedBy as any,

@@ -9,6 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import BaseResponse from '../../../common/response/base.response';
 import { ProductionFormulas, FormulaMaterials } from '../entities';
+import { Products } from '../../products/entity/products.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { ProductCategories } from '../../products/entity/product_categories.entity';
 import { CreateFormulaDto, UpdateFormulaDto, FilterFormulaDto } from '../dto';
@@ -22,6 +23,8 @@ export class ProductionFormulaService extends BaseResponse {
     private readonly formulaRepository: Repository<ProductionFormulas>,
     @InjectRepository(FormulaMaterials)
     private readonly formulaMaterialRepository: Repository<FormulaMaterials>,
+    @InjectRepository(Products)
+    private readonly productRepository: Repository<Products>,
     @InjectRepository(ProductCodes)
     private readonly productCodeRepository: Repository<ProductCodes>,
     @InjectRepository(ProductCategories)
@@ -33,30 +36,26 @@ export class ProductionFormulaService extends BaseResponse {
 
   /**
    * Generate Formula Code
-   * Format: FORMULA-{PRODUCTNAME+CATEGORY}-v{VERSION}
-   * Example: FORMULA-JAMBUMERAH-RTD-v1.0
+   * Format: FORMULA-{PRODUCTNAME+CATEGORY+TYPE}-v{VERSION}
+   * Example: FORMULA-MANGOJUICE-PREMIUM-RTD-v1.0
    */
   private async generateFormulaCode(
-    productCodeId: number,
+    productId: number,
     version: string,
   ): Promise<string> {
-    const productCode = await this.productCodeRepository.findOne({
-      where: { id: productCodeId },
-      relations: ['product', 'product.category', 'category'],
+    const product = await this.productRepository.findOne({
+      where: { id: productId },
+      relations: ['category'],
     });
 
-    if (!productCode) {
-      throw new NotFoundException(
-        `Product code with ID ${productCodeId} not found`,
-      );
+    if (!product) {
+      throw new NotFoundException(`Product with ID ${productId} not found`);
     }
 
-    // Get product name and category
-    const productName = productCode.product?.name || 'UNKNOWN';
-    const categoryName =
-      productCode.product?.category?.name ||
-      productCode.category?.name ||
-      'UNKNOWN';
+    // Get product name, category, and type
+    const productName = product.name || 'UNKNOWN';
+    const categoryName = product.category?.name || 'UNKNOWN';
+    const productType = product.productType || 'UNKNOWN';
 
     // Clean and format
     const cleanProductName = productName
@@ -67,12 +66,17 @@ export class ProductionFormulaService extends BaseResponse {
       .toUpperCase()
       .replace(/\s+/g, '')
       .replace(/[^A-Z0-9]/g, '');
+    const cleanProductType = productType
+      .toUpperCase()
+      .replace(/\s+/g, '')
+      .replace(/[^A-Z0-9]/g, '');
 
-    return `FORMULA-${cleanProductName}-${cleanCategoryName}-v${version}`;
+    return `FORMULA-${cleanProductName}-${cleanCategoryName}-${cleanProductType}-v${version}`;
   }
 
   /**
    * Create Production Formula with Materials (BOM)
+   * NOW SUPPORTS: Product-based formulas (not productCode-based)
    */
   async createFormula(dto: CreateFormulaDto, userId: number) {
     const queryRunner = this.dataSource.createQueryRunner();
@@ -81,21 +85,42 @@ export class ProductionFormulaService extends BaseResponse {
 
     try {
       // 1. Validate product exists
-      const productCode = await this.productCodeRepository.findOne({
-        where: { id: dto.productCodeId },
-        relations: ['product', 'product.category', 'category'],
+      const product = await this.productRepository.findOne({
+        where: { id: dto.productId },
+        relations: ['category'],
       });
 
-      if (!productCode) {
+      if (!product) {
         throw new NotFoundException(
-          `Product code with ID ${dto.productCodeId} not found`,
+          `Product with ID ${dto.productId} not found`,
         );
       }
 
-      // 2. Generate formula code
+      // 2. Validate productCodeId if provided (optional)
+      if (dto.productCodeId) {
+        const productCode = await this.productCodeRepository.findOne({
+          where: { id: dto.productCodeId },
+          relations: ['product'],
+        });
+
+        if (!productCode) {
+          throw new NotFoundException(
+            `Product code with ID ${dto.productCodeId} not found`,
+          );
+        }
+
+        // Ensure productCodeId belongs to the same product
+        if (productCode.product.id !== dto.productId) {
+          throw new BadRequestException(
+            `Product code ${productCode.productCode} does not belong to product ${product.name}`,
+          );
+        }
+      }
+
+      // 3. Generate formula code
       const version = dto.version || '1.0';
       const formulaCode = await this.generateFormulaCode(
-        dto.productCodeId,
+        dto.productId,
         version,
       );
 
@@ -128,7 +153,8 @@ export class ProductionFormulaService extends BaseResponse {
         formulaCode,
         formulaName: dto.formulaName,
         version,
-        productCodeId: dto.productCodeId,
+        productId: dto.productId, // PRIMARY: Product concept
+        productCodeId: dto.productCodeId || null, // OPTIONAL: Specific product size
         concentrateOutput: dto.concentrateOutput || null,
         productionTimeMinutes: dto.productionTimeMinutes || null,
         instructions: dto.instructions || null,
@@ -187,9 +213,11 @@ export class ProductionFormulaService extends BaseResponse {
       const completeFormula = await this.formulaRepository.findOne({
         where: { id: savedFormula.id },
         relations: [
+          'product',
+          'product.category', // Products.category = Sub Category (level 1)
           'productCode',
           'productCode.product',
-          'productCode.category',
+          'productCode.category', // ✅ SWAPPED: ProductCodes.category = Main Category (level 0)
           'materials',
           'materials.materialProductCode',
         ],
@@ -215,14 +243,21 @@ export class ProductionFormulaService extends BaseResponse {
    */
   async getFormulas(filterDto: FilterFormulaDto) {
     try {
-      const { page, pageSize, limit, productCodeId, isActive, search } =
-        filterDto;
+      const {
+        page,
+        pageSize,
+        limit,
+        productId,
+        productCodeId,
+        isActive,
+        search,
+      } = filterDto;
 
       const queryBuilder = this.formulaRepository
         .createQueryBuilder('formula')
+        .leftJoinAndSelect('formula.product', 'product')
+        .leftJoinAndSelect('product.category', 'productCategory')
         .leftJoinAndSelect('formula.productCode', 'productCode')
-        .leftJoinAndSelect('productCode.product', 'product')
-        .leftJoinAndSelect('productCode.category', 'category')
         .leftJoinAndSelect('formula.materials', 'materials')
         .leftJoinAndSelect(
           'materials.materialProductCode',
@@ -236,6 +271,12 @@ export class ProductionFormulaService extends BaseResponse {
         .orderBy('formula.createdAt', 'DESC');
 
       // Apply filters
+      if (productId) {
+        queryBuilder.andWhere('formula.productId = :productId', {
+          productId,
+        });
+      }
+
       if (productCodeId) {
         queryBuilder.andWhere('formula.productCodeId = :productCodeId', {
           productCodeId,
@@ -281,13 +322,12 @@ export class ProductionFormulaService extends BaseResponse {
       const formula = await this.formulaRepository.findOne({
         where: { id },
         relations: [
-          'productCode',
-          'productCode.product',
-          'productCode.category',
+          'product',
+          'product.category', // ✅ SWAPPED: ProductCodes.category = Main Category (level 0)
           'materials',
           'materials.materialProductCode',
           'materials.materialProductCode.product',
-          'materials.materialProductCode.product.category',
+          'materials.materialProductCode.product.category', // Products.category = Sub Category (level 1)
         ],
       });
 

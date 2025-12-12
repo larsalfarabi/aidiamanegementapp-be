@@ -105,7 +105,11 @@ export class UpdateOrderDto extends PickType(OrderDto, [
 export class DeleteOrderDto extends PickType(OrderDto, [
   'isDeleted',
   'deletedBy',
-]) {}
+]) {
+  @IsOptional()
+  @IsString()
+  deleteReason?: string;
+}
 
 export class OrderFilterDto {
   @IsOptional()

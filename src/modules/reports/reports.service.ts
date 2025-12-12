@@ -57,7 +57,7 @@ export class ReportsService {
       .leftJoinAndSelect('order.orderItems', 'orderItems')
       .leftJoinAndSelect('orderItems.productCode', 'productCode')
       .leftJoinAndSelect('productCode.product', 'product') // product is actually the Products entity
-      .leftJoinAndSelect('productCode.category', 'category') // category is actually the ProductCategories entity
+      .leftJoinAndSelect('productCode.category', 'category') // ✅ SWAPPED: productCode.category = Main Category (level 0)
       .leftJoinAndSelect('productCode.size', 'size') // size is actually the ProductSizes entity
       .where('order.invoiceNumber IS NOT NULL') // Only orders with invoices
       .andWhere('(order.isDeleted = :isDeleted OR order.isDeleted IS NULL)', {
@@ -534,7 +534,7 @@ export class ReportsService {
       .leftJoinAndSelect('order.orderItems', 'orderItems')
       .leftJoinAndSelect('orderItems.productCode', 'productCode')
       .leftJoinAndSelect('productCode.product', 'product')
-      .leftJoinAndSelect('productCode.category', 'category')
+      .leftJoinAndSelect('productCode.category', 'category') // ✅ SWAPPED: productCode.category = Main Category (level 0)
       .leftJoinAndSelect('productCode.size', 'size')
       .where('order.invoiceNumber IS NOT NULL')
       .andWhere('(order.isDeleted = :isDeleted OR order.isDeleted IS NULL)', {
@@ -927,7 +927,7 @@ export class ReportsService {
       .leftJoinAndSelect('order.orderItems', 'orderItems')
       .leftJoinAndSelect('orderItems.productCode', 'productCode')
       .leftJoinAndSelect('productCode.product', 'product')
-      .leftJoinAndSelect('productCode.category', 'category')
+      .leftJoinAndSelect('productCode.category', 'category') // ✅ SWAPPED: productCode.category = Main Category (level 0)
       .leftJoinAndSelect('productCode.size', 'size')
       .where('order.invoiceNumber IS NOT NULL')
       .andWhere('(order.isDeleted = :isDeleted OR order.isDeleted IS NULL)', {

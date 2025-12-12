@@ -5,7 +5,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, Like, Not } from 'typeorm';
 import { DailyInventory } from '../entity/daily-inventory.entity';
 import {
   InventoryTransactions,
@@ -28,6 +28,7 @@ import {
   ResponsePagination,
 } from '../../../common/interface/response.interface';
 import { RecordProductionDto } from '../dto/record-production.dto';
+import { CreatePurchaseDto } from '../dto/create-purchase.dto';
 import {
   RecordSaleDto,
   RecordRepackingDto,
@@ -35,6 +36,7 @@ import {
   ReturnSampleDto,
 } from '../dto/record-transaction.dto';
 import { FilterTransactionsDto } from '../dto/filter-transactions.dto';
+import { AdjustStockDto } from '../dto/adjust-stock.dto';
 
 /**
  * InventoryTransactionService
@@ -207,6 +209,164 @@ export class InventoryTransactionService extends BaseResponse {
     } catch (error) {
       await queryRunner.rollbackTransaction();
       this.logger.error('Failed to record production', error);
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  /**
+   * POST /inventory/transactions/purchase
+   * Record material purchase from supplier
+   * Updates: daily_inventory.barangMasuk++
+   * Creates: inventory_transactions with PURCHASE type
+   *
+   * Only for materials (Barang Baku, Barang Pembantu, Barang Kemasan)
+   * Finished goods use recordProduction() instead
+   */
+  async recordPurchase(
+    dto: CreatePurchaseDto,
+    userId: number,
+  ): Promise<ResponseSuccess> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // 1. Validate product exists and is a material (not finished goods)
+      const productCode = await this.productCodesRepo.findOne({
+        where: { id: dto.productCodeId },
+        relations: ['product', 'product.category'],
+      });
+
+      if (!productCode) {
+        throw new NotFoundException(
+          `Product code dengan ID ${dto.productCodeId} tidak ditemukan`,
+        );
+      }
+
+      const categoryName = productCode.product?.category?.name || '';
+      const isMaterial =
+        categoryName === 'Barang Baku' ||
+        categoryName === 'Barang Pembantu' ||
+        categoryName === 'Barang Kemasan';
+
+      if (!isMaterial) {
+        throw new BadRequestException(
+          `Produk "${productCode.product?.name}" bukan material. Gunakan endpoint production untuk Barang Jadi.`,
+        );
+      }
+
+      // 2. Get business date (use purchaseDate if provided, otherwise today)
+      const businessDateStr =
+        dto.purchaseDate || new Date().toISOString().split('T')[0];
+      const businessDate = new Date(businessDateStr);
+
+      // 3. Get or create daily_inventory for this business date
+      const dailyInventory = await this.getOrCreateDailyInventory(
+        queryRunner,
+        dto.productCodeId,
+        businessDate,
+        userId,
+      );
+
+      // 4. Calculate current balance (before this purchase)
+      const currentBalance =
+        Number(dailyInventory.stokAwal || 0) +
+        Number(dailyInventory.barangMasuk || 0) -
+        Number(dailyInventory.dipesan || 0) -
+        Number(dailyInventory.barangOutRepack || 0) -
+        Number(dailyInventory.barangOutSample || 0) -
+        Number(dailyInventory.barangOutProduksi || 0);
+
+      // 5. Calculate balance after this purchase
+      const balanceAfter = currentBalance + dto.quantity;
+
+      // 6. Generate unique purchase transaction number (PUR-YYYYMMDD-XXX)
+      const datePrefix = businessDateStr.replace(/-/g, '');
+      const existingTransactions = await queryRunner.manager.find(
+        InventoryTransactions,
+        {
+          where: {
+            transactionNumber: Like(`PUR-${datePrefix}-%`),
+          },
+          order: {
+            transactionNumber: 'DESC',
+          },
+          take: 1,
+        },
+      );
+
+      let sequence = 1;
+      if (existingTransactions.length > 0) {
+        const lastNumber = existingTransactions[0].transactionNumber;
+        const lastSeq = parseInt(lastNumber.split('-').pop() || '0');
+        sequence = lastSeq + 1;
+      }
+
+      const transactionNumber = `PUR-${datePrefix}-${sequence.toString().padStart(3, '0')}`;
+
+      // 7. Build notes with supplier and price info
+      const noteParts: string[] = [];
+      if (dto.supplierName) {
+        noteParts.push(`Supplier: ${dto.supplierName}`);
+      }
+      if (dto.purchasePrice) {
+        noteParts.push(
+          `Harga: Rp ${dto.purchasePrice.toLocaleString('id-ID')}/unit`,
+        );
+        noteParts.push(
+          `Total: Rp ${(dto.purchasePrice * dto.quantity).toLocaleString('id-ID')}`,
+        );
+      }
+      if (dto.invoiceNumber) {
+        noteParts.push(`Invoice: ${dto.invoiceNumber}`);
+      }
+      if (dto.notes) {
+        noteParts.push(dto.notes);
+      }
+
+      const fullNotes = noteParts.join(' | ');
+
+      // 8. Create inventory transaction record
+      const transaction = queryRunner.manager.create(InventoryTransactions, {
+        transactionNumber,
+        transactionType: TransactionType.PURCHASE,
+        transactionDate: businessDate,
+        businessDate: businessDate,
+        productCodeId: dto.productCodeId,
+        quantity: dto.quantity,
+        balanceAfter,
+        notes: fullNotes || `Pembelian material`,
+        status: TransactionStatus.COMPLETED,
+        createdBy: userId,
+      });
+
+      await queryRunner.manager.save(InventoryTransactions, transaction);
+
+      // 9. Update daily_inventory.barangMasuk
+      dailyInventory.barangMasuk =
+        Number(dailyInventory.barangMasuk || 0) + dto.quantity;
+
+      await queryRunner.manager.save(DailyInventory, dailyInventory);
+
+      // 10. Commit transaction
+      await queryRunner.commitTransaction();
+
+      this.logger.log(
+        `✅ Purchase recorded: ${transactionNumber} | ${dto.quantity} unit | Balance: ${currentBalance} → ${balanceAfter}`,
+      );
+
+      return this._success('Pembelian material berhasil dicatat', {
+        transaction,
+        dailyInventory,
+      });
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error(
+        `❌ Failed to record purchase: ${error.message}`,
+        error.stack,
+      );
       throw error;
     } finally {
       await queryRunner.release();
@@ -658,14 +818,32 @@ export class InventoryTransactionService extends BaseResponse {
         'RPK',
       );
 
+      // Calculate conversion ratio: how many source units = 1 target unit
+      // Example: 4 x 250ML → 1 x 1000ML = ratio 4.0
+      const sourceQty = Number(dto.sourceQuantity);
+      const targetQty = Number(dto.targetQuantity);
+
+      const conversionRatio = sourceQty / targetQty;
+      const expectedTargetQty = sourceQty / conversionRatio;
+      const lossQuantity = expectedTargetQty - targetQty;
+      const lossPercentage = (lossQuantity / sourceQty) * 100;
+
+      this.logger.log(
+        `[REPACKING CALC] Source: ${sourceQty}, Target: ${targetQty}, Ratio: ${conversionRatio}, Expected: ${expectedTargetQty}, Loss: ${lossQuantity} (${lossPercentage}%)`,
+      );
+
       const repackingRecord = new RepackingRecords();
       repackingRecord.repackingNumber = repackingNumber;
       repackingRecord.repackingDate = new Date();
       repackingRecord.businessDate = todayDate;
       repackingRecord.sourceProductCodeId = dto.sourceProductCodeId;
       repackingRecord.targetProductCodeId = dto.targetProductCodeId;
-      repackingRecord.sourceQuantity = dto.sourceQuantity;
-      repackingRecord.targetQuantity = dto.targetQuantity;
+      repackingRecord.sourceQuantity = sourceQty;
+      repackingRecord.targetQuantity = targetQty;
+      repackingRecord.conversionRatio = Number(conversionRatio.toFixed(4));
+      repackingRecord.expectedTargetQty = Number(expectedTargetQty.toFixed(2));
+      repackingRecord.lossQuantity = Number(lossQuantity.toFixed(2));
+      repackingRecord.lossPercentage = Number(lossPercentage.toFixed(2));
       if (dto.reason) {
         repackingRecord.reason = dto.reason;
       }
@@ -1600,7 +1778,8 @@ export class InventoryTransactionService extends BaseResponse {
       .leftJoinAndSelect('transaction.productCode', 'productCode')
       .leftJoinAndSelect('productCode.product', 'product')
       .leftJoinAndSelect('productCode.size', 'size')
-      .leftJoinAndSelect('product.category', 'category');
+      .leftJoinAndSelect('productCode.category', 'mainCategory') // SWAPPED: pc.category = Main Category (level 0)
+      .leftJoin('product.category', 'subCategory'); // SWAPPED: product.category = Sub Category (level 1)
 
     // Filter by productCodeId
     if (productCodeId) {
@@ -1641,12 +1820,11 @@ export class InventoryTransactionService extends BaseResponse {
       );
     }
 
-    // Filter by mainCategory (level 0 category)
+    // Filter by mainCategory (SWAPPED: now from ProductCodes.category)
     if (mainCategory) {
-      queryBuilder.andWhere(
-        '(category.name = :mainCategory OR (category.name = :mainCategory AND category.level = 0))',
-        { mainCategory },
-      );
+      queryBuilder.andWhere('mainCategory.name = :mainCategory', {
+        mainCategory,
+      });
     }
 
     // Order by transaction date (newest first)
@@ -1667,5 +1845,197 @@ export class InventoryTransactionService extends BaseResponse {
       page,
       limit,
     );
+  }
+
+  /**
+   * POST /inventory/transactions/adjustment
+   * Adjust stock manually - Directly modifies stokAkhir
+   *
+   * Use cases:
+   * - Stock opname corrections (koreksi hasil stock opname)
+   * - Damaged goods removal (barang rusak/kadaluarsa)
+   * - Missing stock correction (selisih fisik vs sistem)
+   * - Data entry error fixes
+   *
+   * Impact: stokAkhir baru = stokAkhir lama + adjustmentQuantity
+   * - Positive adjustmentQuantity (+) = Increase stock (tambah stok)
+   * - Negative adjustmentQuantity (-) = Decrease stock (kurangi stok)
+   *
+   * Creates ADJUSTMENT transaction record for full audit trail
+   */
+  async adjustStock(
+    dto: AdjustStockDto,
+    userId: number,
+  ): Promise<ResponseSuccess> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const {
+        productCodeId,
+        businessDate,
+        adjustmentQuantity,
+        reason,
+        notes,
+        performedBy,
+      } = dto;
+
+      // Verify product exists
+      const product = await this.productCodesRepo.findOne({
+        where: { id: productCodeId },
+        relations: ['product', 'size', 'category'],
+      });
+
+      if (!product) {
+        throw new NotFoundException(
+          `Product code with ID ${productCodeId} not found`,
+        );
+      }
+
+      // Use businessDate from DTO (format: YYYY-MM-DD)
+      this.logger.log(
+        `[ADJUSTMENT] Looking for inventory - Product ID: ${productCodeId}, Business Date: ${businessDate}, Product Code: ${product.productCode}`,
+      );
+
+      // Get daily inventory record for the specified business date
+      // Note: Use string directly for DATE column to avoid timezone conversion issues
+      let dailyInventory = await queryRunner.manager
+        .createQueryBuilder(DailyInventory, 'di')
+        .where('di.productCodeId = :productCodeId', { productCodeId })
+        .andWhere('DATE(di.businessDate) = :businessDate', { businessDate })
+        .getOne();
+
+      this.logger.log(
+        `[ADJUSTMENT] Inventory found: ${dailyInventory ? 'YES' : 'NO'}`,
+      );
+
+      if (!dailyInventory) {
+        throw new NotFoundException(
+          `No inventory record found for product ${product.productCode} on ${businessDate}. ` +
+            `Please ensure the product is registered in daily inventory.`,
+        );
+      }
+
+      // Calculate stock before adjustment - Convert to Number first
+      const stockBefore = Number(dailyInventory.stokAkhir);
+      const adjustmentQty = Number(adjustmentQuantity);
+
+      // Calculate expected stock after
+      const stockAfter = Number((stockBefore + adjustmentQty).toFixed(2));
+
+      this.logger.log(
+        `[ADJUSTMENT] Calculation - Before: ${stockBefore}, Adjustment: ${adjustmentQty}, After: ${stockAfter}`,
+      );
+
+      // Validation: Warn if stock will be negative (but allow it for corrections)
+      if (stockAfter < 0) {
+        this.logger.warn(
+          `⚠️ ADJUSTMENT: Stock akan menjadi negatif! ` +
+            `Product: ${product.productCode}, ` +
+            `Before: ${stockBefore}, Adjustment: ${adjustmentQty}, After: ${stockAfter}`,
+        );
+      }
+
+      // ⚠️ IMPORTANT: stokAkhir is a GENERATED COLUMN and cannot be updated directly!
+      // Formula: stokAkhir = stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample - barangOutProduksi
+      //
+      // For ADJUSTMENT, we update stokAwal to reflect the correction:
+      // - Positive adjustment (+): Increase stokAwal
+      // - Negative adjustment (-): Decrease stokAwal
+      // This way the GENERATED COLUMN will automatically recalculate
+      const currentStokAwal = Number(dailyInventory.stokAwal);
+      const newStokAwal = Number((currentStokAwal + adjustmentQty).toFixed(2));
+
+      this.logger.log(
+        `[ADJUSTMENT] Before update - stokAwal: ${currentStokAwal}, adjustment: ${adjustmentQty}, newStokAwal: ${newStokAwal}`,
+      );
+
+      // CRITICAL FIX: Update using the entity ID directly (most reliable approach)
+      // We already have dailyInventory from earlier query, use its ID
+      const updateResult = await queryRunner.manager
+        .createQueryBuilder()
+        .update(DailyInventory)
+        .set({ stokAwal: newStokAwal })
+        .where('id = :id', { id: dailyInventory.id })
+        .execute();
+
+      this.logger.log(
+        `[ADJUSTMENT] Update result - affected rows: ${updateResult.affected} (updated ID: ${dailyInventory.id})`,
+      );
+
+      // Reload entity by ID to get updated GENERATED COLUMN value
+      const updatedInventory = await queryRunner.manager.findOne(
+        DailyInventory,
+        {
+          where: { id: dailyInventory.id },
+        },
+      );
+
+      const actualStockAfter = updatedInventory
+        ? Number(updatedInventory.stokAkhir)
+        : stockAfter;
+
+      this.logger.log(
+        `[ADJUSTMENT] After reload - stokAwal: ${updatedInventory?.stokAwal}, stokAkhir: ${actualStockAfter}`,
+      );
+
+      // Generate transaction number
+      const transactionNumber = await this.generateTransactionNumber(
+        queryRunner,
+        'TRX',
+      );
+
+      // Create ADJUSTMENT transaction record
+      const transaction = this.transactionsRepo.create({
+        transactionNumber,
+        transactionDate: new Date(),
+        businessDate,
+        transactionType: TransactionType.ADJUSTMENT,
+        productCodeId,
+        quantity: adjustmentQuantity, // Store the adjustment amount (+ or -)
+        balanceAfter: actualStockAfter, // Use actual value from reloaded entity
+        status: TransactionStatus.COMPLETED,
+        reason,
+        notes: notes || `Manual stock adjustment by ${performedBy || 'admin'}`,
+        performedBy: performedBy || 'System Admin',
+        createdBy: userId,
+      });
+
+      await queryRunner.manager.save(InventoryTransactions, transaction);
+
+      await queryRunner.commitTransaction();
+
+      this.logger.log(
+        `✅ ADJUSTMENT SUCCESS: ${product.productCode} | ` +
+          `Before: ${stockBefore} | Adjustment: ${adjustmentQuantity > 0 ? '+' : ''}${adjustmentQuantity} | ` +
+          `After: ${actualStockAfter} | Reason: ${reason}`,
+      );
+
+      return this._success('Stock adjustment completed successfully', {
+        transactionNumber,
+        productCode: product.productCode,
+        productName: product.product.name,
+        stockBefore,
+        adjustmentQuantity,
+        stockAfter: actualStockAfter, // Use actual value after reload
+        businessDate,
+        reason,
+      });
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error(`❌ ADJUSTMENT FAILED: ${error.message}`, error.stack);
+
+      if (
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException
+      ) {
+        throw error;
+      }
+
+      throw new BadRequestException(`Failed to adjust stock: ${error.message}`);
+    } finally {
+      await queryRunner.release();
+    }
   }
 }

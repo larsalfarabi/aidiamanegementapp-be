@@ -14,8 +14,8 @@ export class ProductCodes extends BaseEntity {
   @JoinColumn({ name: 'productId' })
   product: Products;
 
-  // ✅ RENAMED & SIMPLIFIED: subCategoryId → category
-  // Relasi ke Sub-Category (level 1) atau category lainnya dari product_categories
+  // ✅ SWAPPED STRUCTURE: categoryId → Main Category (level 0)
+  // Relasi ke Main Category (Barang Jadi, Barang Baku, dll) dari product_categories
   @ManyToOne(() => ProductCategories)
   @JoinColumn({ name: 'categoryId' })
   category: ProductCategories;

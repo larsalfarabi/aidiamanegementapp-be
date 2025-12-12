@@ -61,7 +61,12 @@ export class CreateFormulaDto {
   @IsNotEmpty()
   @IsNumber()
   @Type(() => Number)
-  productCodeId: number; // Finished product
+  productId: number; // Product concept (e.g., MANGO JUICE - PREMIUM - RTD)
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  productCodeId?: number; // OPTIONAL: Specific product size (for backward compatibility)
 
   @IsOptional()
   @IsNumber()

@@ -11,8 +11,8 @@ export class Products extends BaseEntity {
   @Column({ nullable: false, length: 200 })
   name: string;
 
-  // ✅ RENAMED & SIMPLIFIED: mainCategoryId → category
-  // Relasi ke Main Category (level 0) dari product_categories
+  // ✅ SWAPPED STRUCTURE: categoryId → Sub Category (level 1)
+  // Relasi ke Sub Category (Buffet, Premium, Freshly) dari product_categories
   @ManyToOne(() => ProductCategories, { nullable: true })
   @JoinColumn({ name: 'categoryId' })
   category: ProductCategories;

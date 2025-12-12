@@ -60,7 +60,7 @@ export class UpdateProductDto extends PartialType(ProductDto) {}
 export class QueryProductDto extends PaginationDto {
   @IsOptional()
   @IsString()
-  mainCategory?: string;
+  subCategory?: string; // Filter by sub-category (Buffet, Premium, Freshly)
 }
 
 // DTO for checking/creating product item (find or create pattern)
@@ -78,7 +78,7 @@ export class CheckOrCreateProductDto {
   productType?: ProductType;
 
   @IsNotEmpty()
-  category: number;
+  category: number; // Sub Category ID (Buffet, Premium, Freshly)
 
   @IsOptional()
   createdBy?: { id: number };

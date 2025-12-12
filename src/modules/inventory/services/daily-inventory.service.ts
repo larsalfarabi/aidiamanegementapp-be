@@ -82,8 +82,8 @@ export class DailyInventoryService extends BaseResponse {
       .leftJoinAndSelect('di.productCode', 'pc')
       .leftJoinAndSelect('pc.product', 'product')
       .leftJoinAndSelect('pc.size', 'size')
-      .leftJoinAndSelect('pc.category', 'category')
-      .leftJoin('product.category', 'mainCat') // Join parent category to get main category
+      .leftJoinAndSelect('pc.category', 'mainCat') // SWAPPED: pc.category = Main Category (level 0)
+      .leftJoinAndSelect('product.category', 'subCat') // SWAPPED: product.category = Sub Category (level 1)
       .where('di.businessDate = :businessDate', { businessDate: businessDate })
       .andWhere('di.deletedAt IS NULL');
 
@@ -99,12 +99,9 @@ export class DailyInventoryService extends BaseResponse {
       queryBuilder.andWhere('di.isActive = :isActive', { isActive });
     }
 
-    // Filter by main category
+    // Filter by main category (SWAPPED: now from ProductCodes.category)
     if (mainCategory) {
-      queryBuilder.andWhere(
-        '(mainCat.name = :mainCategory OR (category.level = 0 AND category.name = :mainCategory))',
-        { mainCategory },
-      );
+      queryBuilder.andWhere('mainCat.name = :mainCategory', { mainCategory });
     }
 
     // Get total count
@@ -670,7 +667,7 @@ export class DailyInventoryService extends BaseResponse {
       .leftJoinAndSelect('di.productCode', 'pc')
       .leftJoinAndSelect('pc.product', 'product')
       .leftJoinAndSelect('pc.size', 'size')
-      .leftJoinAndSelect('pc.category', 'category')
+      .leftJoinAndSelect('pc.category', 'category') // ✅ SWAPPED: pc.category = Main Category (level 0)
       .where('di.businessDate = :businessDate', { businessDate: invoiceDate })
       .andWhere('di.productCodeId IN (:...productCodeIds)', { productCodeIds })
       .andWhere('di.deletedAt IS NULL')

@@ -8,7 +8,8 @@ import { PaginationDto } from '../../../common/dto/pagination.dto';
  *
  * Usage Examples:
  * - GET /production/formulas                           → All formulas
- * - GET /production/formulas?productCodeId=5           → Formulas for product
+ * - GET /production/formulas?productId=5               → Formulas for product concept
+ * - GET /production/formulas?productCodeId=5           → Formulas with specific product code (legacy)
  * - GET /production/formulas?isActive=true             → Active formulas only
  * - GET /production/formulas?search=formula            → Search by name/code
  * - GET /production/formulas?page=1&pageSize=10        → Paginated
@@ -16,7 +17,11 @@ import { PaginationDto } from '../../../common/dto/pagination.dto';
 export class FilterFormulaDto extends PaginationDto {
   @IsOptional()
   @Type(() => Number)
-  productCodeId?: number;
+  productId?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  productCodeId?: number; // Legacy support
 
   @IsOptional()
   @Transform(({ value }) => {
