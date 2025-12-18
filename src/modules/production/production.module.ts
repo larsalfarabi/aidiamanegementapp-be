@@ -8,6 +8,7 @@ import {
   ProductionBatches,
   ProductionMaterialUsage,
   ProductionStageTracking,
+  ProductionBottlingOutput,
 } from './entities';
 import { ProductCodes } from '../products/entity/product_codes.entity';
 import { Products } from '../products/entity/products.entity';
@@ -26,6 +27,7 @@ import { RedisModule } from '../redis/redis.module';
       ProductionBatches,
       ProductionMaterialUsage,
       ProductionStageTracking,
+      ProductionBottlingOutput,
       ProductCodes,
       Products, // NEW: Product concept entity
       ProductCategories,

@@ -6,12 +6,16 @@ import { InventoryLegacyService } from './services/inventory-legacy.service';
 import { DailyInventoryResetService } from './services/daily-inventory-reset.service';
 import { DailyInventoryService } from './services/daily-inventory.service';
 import { InventoryTransactionService } from './services/inventory-transaction.service';
+import { TransactionReportService } from './services/transaction-report.service';
+import { ExcelExportService } from './services/excel-export.service';
+import { StockOpnameService } from './services/stock-opname.service';
 // Active entities (Daily Inventory System)
 import { DailyInventory } from './entity/daily-inventory.entity';
 import { DailyInventorySnapshots } from './entity/daily-inventory-snapshots.entity';
 import { InventoryTransactions } from './entity/inventory-transactions.entity';
 import { RepackingRecords } from './entity/repacking-records.entity';
 import { SampleTracking } from './entity/sample-tracking.entity';
+import { StockOpnameRecords } from './entity/stock-opname-records.entity';
 // Related entities
 import { ProductCodes } from '../products/entity/product_codes.entity';
 import { Orders } from '../orders/entity/orders.entity';
@@ -29,6 +33,7 @@ import { RedisModule } from '../redis/redis.module';
       InventoryTransactions,
       RepackingRecords,
       SampleTracking,
+      StockOpnameRecords,
       // Related entities
       ProductCodes,
       Orders,
@@ -43,6 +48,9 @@ import { RedisModule } from '../redis/redis.module';
     DailyInventoryService, // Daily inventory CRUD
     DailyInventoryResetService, // Cron job for daily reset
     InventoryTransactionService, // Transaction operations
+    TransactionReportService, // Transaction reports (Laporan Transaksi Barang)
+    ExcelExportService, // Excel export for reports
+    StockOpnameService, // Stock Opname Workflow B (Improved)
     PermissionGuard,
   ],
   exports: [

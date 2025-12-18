@@ -96,6 +96,15 @@ export class DailyInventorySnapshots {
   })
   barangOutSample: number;
 
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    comment: 'Goods out for production (materials only)',
+  })
+  barangOutProduksi: number;
+
   /**
    * REGULAR COLUMN (not generated)
    * This is the calculated ending stock value at the time of snapshot

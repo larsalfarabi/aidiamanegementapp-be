@@ -11,19 +11,28 @@ import {
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Customers } from './entity/customers.entity';
-import { Repository, IsNull } from 'typeorm';
+import { Repository, IsNull, DataSource } from 'typeorm';
 import { CustomerProductCatalogs } from './entity/customer_product_catalog.entity';
 import { NotFoundException } from '@nestjs/common/exceptions';
 import {
   UpdateCustomerDto,
   DeleteCustomerDto,
   UpdateCustomerProductCatalogDto,
+  ExcelUploadResult,
+  ExcelUploadError,
+  ExcelUploadSuccess,
+  CatalogExcelUploadResult,
+  CatalogExcelUploadError,
+  CatalogExcelUploadSuccess,
 } from './dto/customers.dto';
 import {
   CreateCustomerProductCatalogDto,
   CreateCustomerDto,
 } from './dto/customers.dto';
 import { Orders } from '../orders/entity/orders.entity';
+import * as ExcelJS from 'exceljs';
+import { Users } from '../users/entities/users.entity';
+import { ProductCodes } from '../products/entity/product_codes.entity';
 
 @Injectable()
 export class CustomersService extends BaseResponse {
@@ -34,6 +43,9 @@ export class CustomersService extends BaseResponse {
     private readonly customerProductCatalogRepo: Repository<CustomerProductCatalogs>,
     @InjectRepository(Orders)
     private readonly ordersRepo: Repository<Orders>,
+    @InjectRepository(ProductCodes)
+    private readonly productCodesRepo: Repository<ProductCodes>,
+    private readonly dataSource: DataSource,
   ) {
     super();
   }
@@ -309,5 +321,942 @@ export class CustomersService extends BaseResponse {
       throw new NotFoundException('Produk tidak ditemukan di catalog customer');
 
     return this._success('Berhasil menghapus produk dari catalog customer');
+  }
+
+  /**
+   * Generate Excel template for customer data upload
+   */
+  async generateExcelTemplate(): Promise<Buffer> {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Template Upload Customer');
+
+    // Define column headers (Kode Customer akan di-generate otomatis oleh sistem)
+    worksheet.columns = [
+      { header: 'Nama Customer', key: 'customerName', width: 35 },
+      { header: 'Alamat', key: 'address', width: 45 },
+      { header: 'Contact Person', key: 'contactPerson', width: 25 },
+      { header: 'Nama Perusahaan', key: 'companyName', width: 30 },
+      { header: 'Nomor Telepon', key: 'phoneNumber', width: 20 },
+      { header: 'Tipe Customer', key: 'customerType', width: 20 },
+      { header: 'Tipe Pajak', key: 'taxType', width: 15 },
+    ];
+
+    // Style header row (hanya sampai kolom terakhir yang digunakan: G)
+    const headerRow = worksheet.getRow(1);
+    headerRow.height = 25;
+    ['A1', 'B1', 'C1', 'D1', 'E1', 'F1', 'G1'].forEach((cellAddress) => {
+      const cell = worksheet.getCell(cellAddress);
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF4472C4' },
+      };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = {
+        top: { style: 'thin' },
+        left: { style: 'thin' },
+        bottom: { style: 'thin' },
+        right: { style: 'thin' },
+      };
+    });
+
+    // Add example data (Kode Customer akan di-generate otomatis)
+    worksheet.addRow({
+      customerName: 'Hotel Grand Surya',
+      address: 'Jl. Raya Kuta No. 45, Badung, Bali',
+      contactPerson: 'Budi Santoso',
+      companyName: 'PT Grand Surya Hospitality',
+      phoneNumber: '0361-123456',
+      customerType: 'Hotel',
+      taxType: 'PPN',
+    });
+
+    worksheet.addRow({
+      customerName: 'Cafe Aroma',
+      address: 'Jl. Sunset Road No. 88, Kuta, Bali',
+      contactPerson: 'Siti Rahmawati',
+      companyName: '',
+      phoneNumber: '0812-3456-7890',
+      customerType: 'Cafe & Resto',
+      taxType: 'Non PPN',
+    });
+
+    // Add instructions in a separate sheet
+    const instructionSheet = workbook.addWorksheet('Petunjuk Pengisian');
+    instructionSheet.columns = [
+      { header: 'Kolom', key: 'column', width: 20 },
+      { header: 'Keterangan', key: 'description', width: 60 },
+      { header: 'Wajib Diisi', key: 'required', width: 15 },
+    ];
+
+    // Style instruction header
+    const instrHeaderRow = instructionSheet.getRow(1);
+    instrHeaderRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    instrHeaderRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF70AD47' },
+    };
+    instrHeaderRow.alignment = { vertical: 'middle', horizontal: 'center' };
+    instrHeaderRow.height = 25;
+
+    // Add border to instruction header
+    instrHeaderRow.eachCell((cell) => {
+      cell.border = {
+        top: { style: 'thin' },
+        left: { style: 'thin' },
+        bottom: { style: 'thin' },
+        right: { style: 'thin' },
+      };
+    });
+
+    // Add instruction data
+    const instructions = [
+      {
+        column: 'Nama Customer',
+        description:
+          'Nama lengkap customer atau bisnis. Kode customer akan otomatis dibuat berdasarkan huruf pertama nama (contoh: "Hotel Surya" → H-001)',
+        required: 'Ya',
+      },
+      {
+        column: 'Alamat',
+        description: 'Alamat lengkap customer',
+        required: 'Ya',
+      },
+      {
+        column: 'Contact Person',
+        description: 'Nama orang yang dapat dihubungi',
+        required: 'Ya',
+      },
+      {
+        column: 'Nama Perusahaan',
+        description: 'Nama perusahaan (opsional, bisa dikosongkan)',
+        required: 'Tidak',
+      },
+      {
+        column: 'Nomor Telepon',
+        description: 'Nomor telepon customer yang dapat dihubungi',
+        required: 'Ya',
+      },
+      {
+        column: 'Tipe Customer',
+        description:
+          'Pilihan: Hotel, Cafe & Resto, Catering, atau Reseller (harus sesuai dengan pilihan)',
+        required: 'Ya',
+      },
+      {
+        column: 'Tipe Pajak',
+        description: 'Pilihan: PPN atau Non PPN (harus sesuai dengan pilihan)',
+        required: 'Ya',
+      },
+    ];
+
+    instructions.forEach((instruction) => {
+      const row = instructionSheet.addRow(instruction);
+      row.eachCell((cell) => {
+        cell.border = {
+          top: { style: 'thin' },
+          left: { style: 'thin' },
+          bottom: { style: 'thin' },
+          right: { style: 'thin' },
+        };
+      });
+    });
+
+    // Add general notes
+    instructionSheet.addRow([]);
+    instructionSheet.addRow(['CATATAN PENTING:']).font = {
+      bold: true,
+      size: 12,
+    };
+    instructionSheet.addRow([
+      '1. Pastikan semua kolom yang wajib diisi tidak kosong',
+    ]);
+    instructionSheet.addRow([
+      '2. Kode Customer akan dibuat OTOMATIS oleh sistem berdasarkan huruf pertama nama customer',
+    ]);
+    instructionSheet.addRow([
+      '3. Format kode: [Huruf Pertama]-[Nomor] (contoh: H-001, H-002, C-001)',
+    ]);
+    instructionSheet.addRow([
+      '4. Tipe Customer dan Tipe Pajak harus sesuai dengan pilihan yang tersedia',
+    ]);
+    instructionSheet.addRow([
+      '5. Hapus baris contoh sebelum mengisi data customer Anda',
+    ]);
+    instructionSheet.addRow([
+      '6. Maksimal 1000 baris data dalam satu file upload',
+    ]);
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(buffer);
+  }
+
+  /**
+   * Generate unique customer code based on customer name
+   * Format: [FirstLetter]-[XXX] (e.g., H-001, C-002)
+   *
+   * ✅ SAFETY: Checks database for existing codes to prevent duplicates
+   * ✅ UNIQUE CONSTRAINT: Ensures generated code doesn't violate unique constraint
+   */
+  private async generateCustomerCode(
+    customerName: string,
+    existingCodesSet: Set<string>,
+  ): Promise<string> {
+    // Get first letter of customer name
+    const firstLetter = customerName.charAt(0).toUpperCase();
+
+    // Validate first letter is alphabet
+    if (!/^[A-Z]$/.test(firstLetter)) {
+      throw new BadRequestException(
+        `Nama customer "${customerName}" harus dimulai dengan huruf alphabet`,
+      );
+    }
+
+    // ✅ CRITICAL: Get ALL codes from database (including soft-deleted)
+    // This prevents duplicate codes even after soft-delete
+    const allCodesResponse = await this.findAllCodes();
+    const allCodesFromDb = allCodesResponse.data as string[];
+
+    // Filter codes with same prefix from database
+    const codesWithPrefix = allCodesFromDb.filter((code) =>
+      code.toUpperCase().startsWith(firstLetter + '-'),
+    );
+
+    // Find highest number with this prefix from database
+    let maxNumber = 0;
+    for (const code of codesWithPrefix) {
+      const parts = code.split('-');
+      if (parts.length === 2) {
+        const num = parseInt(parts[1], 10);
+        if (!isNaN(num) && num > maxNumber) {
+          maxNumber = num;
+        }
+      }
+    }
+
+    // ✅ BATCH SAFETY: Also check in existingCodesSet (codes being uploaded in current batch)
+    for (const code of Array.from(existingCodesSet)) {
+      if (code.toUpperCase().startsWith(firstLetter + '-')) {
+        const parts = code.split('-');
+        if (parts.length === 2) {
+          const num = parseInt(parts[1], 10);
+          if (!isNaN(num) && num > maxNumber) {
+            maxNumber = num;
+          }
+        }
+      }
+    }
+
+    // Generate new code with incremented number
+    const newNumber = maxNumber + 1;
+    const newCode = `${firstLetter}-${newNumber.toString().padStart(3, '0')}`;
+
+    // ✅ FINAL VERIFICATION: Double-check code doesn't exist in database
+    // This prevents race conditions from simultaneous uploads
+    const finalCheck = await this.customersRepo.findOne({
+      where: { customerCode: newCode },
+      withDeleted: true, // Check including soft-deleted records
+    });
+
+    if (finalCheck) {
+      // If collision detected, retry with next number
+      // This handles edge cases and race conditions
+      const retryNumber = maxNumber + 2;
+      const retryCode = `${firstLetter}-${retryNumber.toString().padStart(3, '0')}`;
+
+      // Verify retry code
+      const retryCheck = await this.customersRepo.findOne({
+        where: { customerCode: retryCode },
+        withDeleted: true,
+      });
+
+      if (retryCheck) {
+        throw new BadRequestException(
+          `Gagal generate kode customer untuk "${customerName}". Terjadi konflik kode. Silakan coba lagi.`,
+        );
+      }
+
+      return retryCode;
+    }
+
+    return newCode;
+  }
+
+  /**
+   * Upload and process Excel file for customer data
+   */
+  async uploadExcelFile(
+    fileBuffer: Buffer,
+    createdBy: { id: number },
+  ): Promise<ExcelUploadResult> {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(fileBuffer as any);
+
+    const worksheet = workbook.getWorksheet('Template Upload Customer');
+    if (!worksheet) {
+      throw new BadRequestException(
+        'Sheet "Template Upload Customer" tidak ditemukan dalam file Excel',
+      );
+    }
+
+    const errors: ExcelUploadError[] = [];
+    const successDetails: ExcelUploadSuccess[] = [];
+    const customersToCreate: CreateCustomerDto[] = [];
+
+    // Get existing customer codes for validation
+    const existingCodes = await this.customersRepo.find({
+      where: { isDeleted: false },
+      select: ['customerCode'],
+    });
+    const existingCodesSet = new Set(
+      existingCodes.map((c) => c.customerCode.toUpperCase()),
+    );
+
+    // Track codes in current upload to detect duplicates within the file
+    const uploadedCodesSet = new Set<string>();
+
+    // Process rows (skip header row)
+    let totalRows = 0;
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return; // Skip header
+
+      // Check if row is empty
+      const rowValues = row.values as any[];
+      const isEmptyRow =
+        rowValues &&
+        Array.isArray(rowValues) &&
+        rowValues.every(
+          (cell: any) => cell === null || cell === undefined || cell === '',
+        );
+      if (isEmptyRow) return;
+
+      totalRows++;
+
+      const rowErrors: string[] = [];
+      // Column indices shifted left after removing customerCode column (auto-generated)
+      const customerName = row.getCell(1).value?.toString().trim() || '';
+      const address = row.getCell(2).value?.toString().trim() || '';
+      const contactPerson = row.getCell(3).value?.toString().trim() || '';
+      const companyName = row.getCell(4).value?.toString().trim() || '';
+      const phoneNumber = row.getCell(5).value?.toString().trim() || '';
+      const customerType = row.getCell(6).value?.toString().trim() || '';
+      const taxType = row.getCell(7).value?.toString().trim() || '';
+
+      // Validate required fields (customerCode will be auto-generated)
+      if (!customerName) rowErrors.push('Nama Customer wajib diisi');
+      if (!address) rowErrors.push('Alamat wajib diisi');
+      if (!contactPerson) rowErrors.push('Contact Person wajib diisi');
+      if (!phoneNumber) rowErrors.push('Nomor Telepon wajib diisi');
+      if (!customerType) rowErrors.push('Tipe Customer wajib diisi');
+      if (!taxType) rowErrors.push('Tipe Pajak wajib diisi');
+
+      // Validate customer type
+      const validCustomerTypes = [
+        'Hotel',
+        'Cafe & Resto',
+        'Catering',
+        'Reseller',
+      ];
+      if (customerType && !validCustomerTypes.includes(customerType)) {
+        rowErrors.push(
+          `Tipe Customer tidak valid. Pilihan: ${validCustomerTypes.join(', ')}`,
+        );
+      }
+
+      // Validate tax type
+      const validTaxTypes = ['PPN', 'Non PPN'];
+      if (taxType && !validTaxTypes.includes(taxType)) {
+        rowErrors.push(
+          `Tipe Pajak tidak valid. Pilihan: ${validTaxTypes.join(', ')}`,
+        );
+      }
+
+      // Validate customer name starts with alphabet (required for code generation)
+      if (customerName && !/^[A-Z]/i.test(customerName)) {
+        rowErrors.push('Nama Customer harus dimulai dengan huruf alphabet');
+      }
+
+      if (rowErrors.length > 0) {
+        errors.push({
+          row: rowNumber,
+          customerCode: '', // Will be generated later
+          customerName,
+          errors: rowErrors,
+        });
+      } else {
+        // Store validated data (customerCode will be generated in second pass)
+        customersToCreate.push({
+          customerCode: '', // Placeholder, will be generated
+          customerName,
+          address,
+          contactPerson,
+          companyName: companyName || undefined,
+          phoneNumber,
+          customerType: customerType as any,
+          taxType: taxType as any,
+          isActive: true,
+          createdBy,
+        });
+        successDetails.push({
+          row: rowNumber,
+          customerCode: '', // Placeholder, will be generated
+          customerName,
+        });
+      }
+    });
+
+    // Check row limit
+    if (totalRows > 1000) {
+      throw new BadRequestException(
+        'File Excel melebihi batas maksimum 1000 baris data',
+      );
+    }
+
+    if (totalRows === 0) {
+      throw new BadRequestException('File Excel tidak memiliki data customer');
+    }
+
+    // Second pass: Generate customer codes for valid entries
+    for (let i = 0; i < customersToCreate.length; i++) {
+      try {
+        const customerCode = await this.generateCustomerCode(
+          customersToCreate[i].customerName,
+          uploadedCodesSet,
+        );
+        customersToCreate[i].customerCode = customerCode;
+        successDetails[i].customerCode = customerCode;
+        uploadedCodesSet.add(customerCode.toUpperCase());
+      } catch (error) {
+        // If code generation fails, move to errors
+        const rowNum = successDetails[i].row;
+        errors.push({
+          row: rowNum,
+          customerCode: '',
+          customerName: customersToCreate[i].customerName,
+          errors: [error.message || 'Gagal generate kode customer'],
+        });
+        // Mark for removal
+        customersToCreate[i].customerCode = null as any;
+      }
+    }
+
+    // Remove failed entries (where customerCode is null)
+    const validCustomers = customersToCreate.filter((c) => c.customerCode);
+    const validSuccessDetails = successDetails.filter((s) => s.customerCode);
+
+    // Save valid customers to database using transaction
+    // ✅ TRANSACTION: Ensures atomicity - all or nothing
+    // ✅ ERROR HANDLING: Catches unique constraint violations from race conditions
+    let successCount = 0;
+    if (validCustomers.length > 0) {
+      await this.dataSource.transaction(async (manager) => {
+        for (const customerData of validCustomers) {
+          try {
+            const customer = manager.create(Customers, customerData);
+            await manager.save(customer);
+            successCount++;
+          } catch (error) {
+            // Handle unexpected errors during save
+            // ✅ UNIQUE CONSTRAINT: Detects duplicate customerCode violations
+            const isDuplicateError =
+              error.code === 'ER_DUP_ENTRY' ||
+              error.message?.includes('Duplicate entry') ||
+              error.message?.includes('unique constraint');
+
+            const failedCustomer = validSuccessDetails.find(
+              (s) => s.customerCode === customerData.customerCode,
+            );
+
+            if (failedCustomer) {
+              const errorMessage = isDuplicateError
+                ? `Kode Customer "${customerData.customerCode}" sudah ada di database (duplikasi terdeteksi)`
+                : `Gagal menyimpan: ${error.message}`;
+
+              errors.push({
+                row: failedCustomer.row,
+                customerCode: customerData.customerCode,
+                customerName: customerData.customerName,
+                errors: [errorMessage],
+              });
+
+              // Remove from success list
+              const index = validSuccessDetails.findIndex(
+                (s) => s.customerCode === customerData.customerCode,
+              );
+              if (index > -1) {
+                validSuccessDetails.splice(index, 1);
+              }
+            }
+          }
+        }
+      });
+    }
+
+    return {
+      totalRows,
+      successCount: validSuccessDetails.length,
+      failureCount: errors.length,
+      errors,
+      successDetails: validSuccessDetails,
+    };
+  }
+
+  /**
+   * Generate Excel template for customer product catalog upload
+   * ✅ USER-FRIENDLY: Template khusus per customer dengan instruksi lengkap
+   */
+  async generateCatalogExcelTemplate(customerId: number): Promise<Buffer> {
+    // Verify customer exists
+    const customer = await this.customersRepo.findOne({
+      where: { id: customerId },
+    });
+
+    if (!customer) {
+      throw new NotFoundException('Customer tidak ditemukan');
+    }
+
+    const workbook = new ExcelJS.Workbook();
+
+    // Sheet 1: Template Upload
+    const worksheet = workbook.addWorksheet('Template Upload Catalog');
+
+    // Set column headers (removed Nama Produk - sudah terwakili dengan Kode Produk)
+    worksheet.columns = [
+      { header: 'Kode Produk', key: 'productCode', width: 20 },
+      { header: 'Harga Customer', key: 'customerPrice', width: 20 },
+      { header: 'Diskon (%)', key: 'discountPercentage', width: 15 },
+      { header: 'Tanggal Efektif', key: 'effectiveDate', width: 18 },
+      { header: 'Tanggal Kadaluarsa', key: 'expiryDate', width: 18 },
+      { header: 'Catatan', key: 'notes', width: 30 },
+    ];
+
+    // Style header row (hanya sampai kolom terakhir yang digunakan: F)
+    const headerRow = worksheet.getRow(1);
+    headerRow.height = 25;
+    ['A1', 'B1', 'C1', 'D1', 'E1', 'F1'].forEach((cellAddress) => {
+      const cell = worksheet.getCell(cellAddress);
+      cell.font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } };
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF2563EB' }, // Blue
+      };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = {
+        top: { style: 'thin' },
+        left: { style: 'thin' },
+        bottom: { style: 'thin' },
+        right: { style: 'thin' },
+      };
+    });
+
+    // Add example data
+    worksheet.addRow({
+      productCode: 'BJ-001',
+      customerPrice: 85000,
+      discountPercentage: 5,
+      effectiveDate: new Date(),
+      expiryDate: null,
+      notes: 'Harga khusus untuk pembelian reguler',
+    });
+
+    worksheet.addRow({
+      productCode: 'BJ-002',
+      customerPrice: 90000,
+      discountPercentage: 0,
+      effectiveDate: new Date(),
+      expiryDate: null,
+      notes: '',
+    });
+
+    // Style example rows
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber > 1) {
+        row.eachCell((cell) => {
+          cell.border = {
+            top: { style: 'thin', color: { argb: 'FFE5E7EB' } },
+            left: { style: 'thin', color: { argb: 'FFE5E7EB' } },
+            bottom: { style: 'thin', color: { argb: 'FFE5E7EB' } },
+            right: { style: 'thin', color: { argb: 'FFE5E7EB' } },
+          };
+        });
+      }
+    });
+
+    // Sheet 2: Instructions
+    const instructionSheet = workbook.addWorksheet('Petunjuk Pengisian');
+
+    // Title
+    instructionSheet.mergeCells('A1:C1');
+    const titleCell = instructionSheet.getCell('A1');
+    titleCell.value = `PETUNJUK UPLOAD CATALOG - ${customer.customerName}`;
+    titleCell.font = { bold: true, size: 14, color: { argb: 'FF1F2937' } };
+    titleCell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFF3F4F6' },
+    };
+    titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+    instructionSheet.getRow(1).height = 30;
+
+    instructionSheet.addRow([]);
+    instructionSheet.addRow([]);
+
+    // Column descriptions
+    instructionSheet.getColumn(1).width = 25;
+    instructionSheet.getColumn(2).width = 60;
+    instructionSheet.getColumn(3).width = 12;
+
+    const headerRow2 = instructionSheet.addRow([
+      'Kolom',
+      'Keterangan',
+      'Wajib?',
+    ]);
+    headerRow2.font = { bold: true, size: 11 };
+    headerRow2.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFDBEAFE' },
+    };
+
+    const instructions = [
+      {
+        column: 'Kode Produk',
+        description:
+          'Kode produk yang akan ditambahkan ke catalog (contoh: BJ-001). Sistem akan memvalidasi apakah produk tersedia.',
+        required: 'Ya',
+      },
+      {
+        column: 'Harga Customer',
+        description:
+          'Harga khusus untuk customer ini dalam Rupiah (contoh: 85000)',
+        required: 'Ya',
+      },
+      {
+        column: 'Diskon (%)',
+        description:
+          'Persentase diskon 0-100 (contoh: 5 untuk 5%). Kosongkan jika tidak ada diskon',
+        required: 'Tidak',
+      },
+      {
+        column: 'Tanggal Efektif',
+        description:
+          'Tanggal mulai berlaku harga ini (format: YYYY-MM-DD atau kosongkan untuk hari ini)',
+        required: 'Tidak',
+      },
+      {
+        column: 'Tanggal Kadaluarsa',
+        description:
+          'Tanggal berakhir harga ini (format: YYYY-MM-DD atau kosongkan jika tidak ada)',
+        required: 'Tidak',
+      },
+      {
+        column: 'Catatan',
+        description: 'Catatan tambahan untuk harga produk ini',
+        required: 'Tidak',
+      },
+    ];
+
+    instructions.forEach((instruction) => {
+      const row = instructionSheet.addRow([
+        instruction.column,
+        instruction.description,
+        instruction.required,
+      ]);
+      row.getCell(3).font = {
+        bold: instruction.required === 'Ya',
+        color: {
+          argb: instruction.required === 'Ya' ? 'FFDC2626' : 'FF6B7280',
+        },
+      };
+    });
+
+    // Important notes
+    instructionSheet.addRow([]);
+    instructionSheet.addRow(['CATATAN PENTING:']).font = {
+      bold: true,
+      size: 12,
+    };
+    instructionSheet.addRow([
+      '1. Pastikan Kode Produk sesuai dengan data master produk di sistem',
+    ]);
+    instructionSheet.addRow([
+      '2. Produk yang sudah ada di catalog customer ini TIDAK AKAN ditambahkan lagi (duplikat akan diabaikan)',
+    ]);
+    instructionSheet.addRow([
+      '3. Harga Customer harus berupa angka tanpa tanda titik atau koma',
+    ]);
+    instructionSheet.addRow([
+      '4. Diskon harus berupa angka 0-100 (persentase)',
+    ]);
+    instructionSheet.addRow([
+      '5. Format tanggal: YYYY-MM-DD (contoh: 2024-12-18)',
+    ]);
+    instructionSheet.addRow([
+      '6. Hapus baris contoh sebelum mengisi data produk Anda',
+    ]);
+    instructionSheet.addRow([
+      '7. Maksimal 500 baris data dalam satu file upload',
+    ]);
+    instructionSheet.addRow([
+      '8. Produk yang sama tidak boleh muncul lebih dari 1 kali dalam file',
+    ]);
+
+    // Convert to buffer
+    const buffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(buffer);
+  }
+
+  /**
+   * Upload and process customer catalog Excel file
+   * ✅ VALIDATION: Comprehensive validation untuk data integrity
+   * ✅ USER FEEDBACK: Detailed error reporting per row
+   */
+  async uploadCatalogExcelFile(
+    customerId: number,
+    fileBuffer: Buffer,
+    createdBy: { id: number },
+  ): Promise<CatalogExcelUploadResult> {
+    // Verify customer exists
+    const customer = await this.customersRepo.findOne({
+      where: { id: customerId },
+    });
+
+    if (!customer) {
+      throw new NotFoundException('Customer tidak ditemukan');
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(fileBuffer as any);
+
+    const worksheet = workbook.getWorksheet('Template Upload Catalog');
+    if (!worksheet) {
+      throw new BadRequestException(
+        'Sheet "Template Upload Catalog" tidak ditemukan dalam file Excel',
+      );
+    }
+
+    const errors: CatalogExcelUploadError[] = [];
+    const successDetails: CatalogExcelUploadSuccess[] = [];
+    const catalogsToCreate: CreateCustomerProductCatalogDto[] = [];
+
+    // Get existing catalog items for this customer
+    const existingCatalog = await this.customerProductCatalogRepo.find({
+      where: { customerId, isActive: true },
+      select: ['productCodeId'],
+    });
+    const existingProductIdsSet = new Set(
+      existingCatalog.map((c) => c.productCodeId),
+    );
+
+    // Track product codes in current upload to detect duplicates
+    const uploadedProductCodesSet = new Set<string>();
+
+    // Collect all rows data first (eachRow is synchronous)
+    const rowsData: any[] = [];
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return; // Skip header
+
+      // Check if row is empty
+      const rowValues = row.values as any[];
+      const isEmptyRow =
+        rowValues &&
+        Array.isArray(rowValues) &&
+        rowValues.every(
+          (cell: any) => cell === null || cell === undefined || cell === '',
+        );
+      if (isEmptyRow) return;
+
+      rowsData.push({
+        rowNumber,
+        productCode: row.getCell(1).value?.toString().trim() || '',
+        customerPrice: parseFloat(row.getCell(2).value?.toString() || '0'),
+        discountPercentage: parseFloat(row.getCell(3).value?.toString() || '0'),
+        effectiveDateStr: row.getCell(4).value?.toString().trim() || '',
+        expiryDateStr: row.getCell(5).value?.toString().trim() || '',
+        notes: row.getCell(6).value?.toString().trim() || '',
+      });
+    });
+
+    const totalRows = rowsData.length;
+
+    // Process rows asynchronously
+    for (const rowData of rowsData) {
+      const rowErrors: string[] = [];
+      const {
+        rowNumber,
+        productCode,
+        customerPrice,
+        discountPercentage,
+        effectiveDateStr,
+        expiryDateStr,
+        notes,
+      } = rowData;
+
+      // Validate required fields
+      if (!productCode) rowErrors.push('Kode Produk wajib diisi');
+      if (!customerPrice || isNaN(customerPrice) || customerPrice <= 0) {
+        rowErrors.push(
+          'Harga Customer wajib diisi dan harus berupa angka positif',
+        );
+      }
+
+      // Validate discount
+      if (
+        discountPercentage &&
+        (isNaN(discountPercentage) ||
+          discountPercentage < 0 ||
+          discountPercentage > 100)
+      ) {
+        rowErrors.push('Diskon harus berupa angka antara 0-100');
+      }
+
+      // Validate dates
+      let effectiveDate: Date | undefined;
+      let expiryDate: Date | undefined;
+
+      if (effectiveDateStr) {
+        effectiveDate = new Date(effectiveDateStr);
+        if (isNaN(effectiveDate.getTime())) {
+          rowErrors.push(
+            'Format Tanggal Efektif tidak valid (gunakan YYYY-MM-DD)',
+          );
+        }
+      }
+
+      if (expiryDateStr) {
+        expiryDate = new Date(expiryDateStr);
+        if (isNaN(expiryDate.getTime())) {
+          rowErrors.push(
+            'Format Tanggal Kadaluarsa tidak valid (gunakan YYYY-MM-DD)',
+          );
+        }
+      }
+
+      // Check if product exists in database
+      let productCodeId: number | null = null;
+      if (productCode) {
+        const product = await this.productCodesRepo.findOne({
+          where: { productCode },
+        });
+
+        if (!product) {
+          rowErrors.push(
+            `Produk dengan kode "${productCode}" tidak ditemukan di sistem`,
+          );
+        } else {
+          productCodeId = product.id;
+
+          // Check if product already in catalog
+          if (existingProductIdsSet.has(productCodeId)) {
+            rowErrors.push(
+              `Produk "${productCode}" sudah ada di catalog customer ini`,
+            );
+          }
+
+          // Check for duplicates within upload file
+          if (uploadedProductCodesSet.has(productCode.toUpperCase())) {
+            rowErrors.push(
+              `Produk "${productCode}" duplikat dalam file yang diupload`,
+            );
+          }
+        }
+      }
+
+      if (rowErrors.length > 0) {
+        errors.push({
+          row: rowNumber,
+          productCode,
+          errors: rowErrors,
+        });
+      } else if (productCodeId) {
+        uploadedProductCodesSet.add(productCode.toUpperCase());
+        catalogsToCreate.push({
+          customerId,
+          productCodeId,
+          customerPrice,
+          discountPercentage: discountPercentage || 0,
+          effectiveDate,
+          expiryDate,
+          notes: notes || undefined,
+          createdBy,
+        });
+        successDetails.push({
+          row: rowNumber,
+          productCode,
+          customerPrice,
+          discountPercentage: discountPercentage || 0,
+        });
+      }
+    }
+
+    // Check row limit
+    if (totalRows > 500) {
+      throw new BadRequestException(
+        'File Excel melebihi batas maksimum 500 baris data',
+      );
+    }
+
+    if (totalRows === 0) {
+      throw new BadRequestException('File Excel tidak memiliki data produk');
+    }
+
+    // Save valid catalog items to database using transaction
+    let successCount = 0;
+    if (catalogsToCreate.length > 0) {
+      await this.dataSource.transaction(async (manager) => {
+        for (const catalogData of catalogsToCreate) {
+          try {
+            const catalog = manager.create(CustomerProductCatalogs, {
+              ...catalogData,
+              isActive: true,
+              createdBy: catalogData.createdBy as any,
+            });
+            await manager.save(catalog);
+            successCount++;
+          } catch (error) {
+            // Handle unexpected errors during save
+            const isDuplicateError =
+              error.code === 'ER_DUP_ENTRY' ||
+              error.message?.includes('Duplicate entry') ||
+              error.message?.includes('unique constraint');
+
+            const failedCatalog = successDetails.find(
+              (s) => s.productCode === catalogData.productCodeId.toString(),
+            );
+
+            if (failedCatalog) {
+              const errorMessage = isDuplicateError
+                ? `Produk sudah ada di catalog (duplikasi terdeteksi)`
+                : `Gagal menyimpan: ${error.message}`;
+
+              errors.push({
+                row: failedCatalog.row,
+                productCode: failedCatalog.productCode,
+                errors: [errorMessage],
+              });
+
+              // Remove from success list
+              const index = successDetails.findIndex(
+                (s) => s.productCode === failedCatalog.productCode,
+              );
+              if (index > -1) {
+                successDetails.splice(index, 1);
+              }
+            }
+          }
+        }
+      });
+    }
+
+    return {
+      totalRows,
+      successCount: successDetails.length,
+      failureCount: errors.length,
+      errors,
+      successDetails,
+    };
   }
 }

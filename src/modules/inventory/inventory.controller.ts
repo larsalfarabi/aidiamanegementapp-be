@@ -17,6 +17,9 @@ import { Request } from 'express';
 import { DailyInventoryService } from './services/daily-inventory.service';
 import { DailyInventoryResetService } from './services/daily-inventory-reset.service';
 import { InventoryTransactionService } from './services/inventory-transaction.service';
+import { TransactionReportService } from './services/transaction-report.service';
+import { ExcelExportService } from './services/excel-export.service';
+import { StockOpnameService } from './services/stock-opname.service';
 import { JwtGuard } from '../auth/guards/auth.guard';
 import { PermissionGuard } from '../auth/guards/permission.guard';
 import { RequirePermissions } from '../../common/decorator/permission.decorator';
@@ -33,9 +36,16 @@ import {
   FilterDailyInventoryDto,
   CheckStockDto,
 } from './dto';
+import {
+  TransactionReportFiltersDto,
+  QuickAdjustmentDto,
+  ExcelExportOptionsDto,
+  BatchStockOpnameSaveDto,
+  StockOpnameFiltersDto,
+} from './dto/transaction-report.dto';
 
 interface AuthRequest extends Request {
-  user: { id: number };
+  user: { id: number; name?: string };
 }
 
 @UseGuards(JwtGuard, PermissionGuard)
@@ -45,6 +55,9 @@ export class InventoryController {
     private readonly dailyInventoryService: DailyInventoryService,
     private readonly dailyResetService: DailyInventoryResetService,
     private readonly transactionService: InventoryTransactionService,
+    private readonly reportService: TransactionReportService,
+    private readonly excelExportService: ExcelExportService,
+    private readonly stockOpnameService: StockOpnameService,
   ) {}
 
   // ==================== DAILY INVENTORY CRUD ====================
@@ -508,5 +521,257 @@ export class InventoryController {
       checkStockDto.invoiceDate,
       checkStockDto.orderItems,
     );
+  }
+
+  // ==================== TRANSACTION REPORTS ====================
+
+  /**
+   * GET /inventory/reports/finished-goods
+   * Get transaction report for Finished Goods (Barang Jadi)
+   *
+   * Query params:
+   * - startDate: YYYY-MM-DD (optional)
+   * - endDate: YYYY-MM-DD (optional)
+   * - productCodeId: number (optional)
+   * - page, pageSize: pagination
+   *
+   * Columns: Kode, Nama, STCK AW, In Prod, Out Sales, Out Repack, Sample, STCK AKHIR, SO FISIK, Selisih, Keterangan
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('reports/finished-goods')
+  async getFinishedGoodsReport(@Query() filters: TransactionReportFiltersDto) {
+    return this.reportService.getFinishedGoodsReport(filters);
+  }
+
+  /**
+   * GET /inventory/reports/materials
+   * Get transaction report for Materials (Bahan Baku, Pembantu, Kemasan)
+   *
+   * Query params:
+   * - startDate: YYYY-MM-DD (optional)
+   * - endDate: YYYY-MM-DD (optional)
+   * - mainCategory: string (optional - specific material type)
+   * - productCodeId: number (optional)
+   * - page, pageSize: pagination
+   *
+   * Columns: Kode, Nama, STCK AW, Purchase, Out Prod, STCK AKHIR, SO FISIK, Selisih, Keterangan
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('reports/materials')
+  async getMaterialsReport(@Query() filters: TransactionReportFiltersDto) {
+    return this.reportService.getMaterialsReport(filters);
+  }
+
+  /**
+   * POST /inventory/reports/quick-adjustment
+   * Quick adjustment from report view (inline stock correction)
+   *
+   * Allows users to adjust stock directly from report when they spot discrepancies
+   * This integrates with existing adjustment workflow
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.UPDATE}`)
+  @Post('reports/quick-adjustment')
+  @HttpCode(HttpStatus.CREATED)
+  async quickAdjustment(
+    @Body() dto: QuickAdjustmentDto,
+    @Req() req: AuthRequest,
+  ) {
+    // Reuse existing adjustment endpoint
+    const adjustmentDto: AdjustStockDto = {
+      productCodeId: dto.productCodeId,
+      businessDate: dto.businessDate,
+      adjustmentQuantity: dto.adjustmentQuantity,
+      reason: dto.reason,
+      notes: dto.notes,
+    };
+
+    return this.transactionService.adjustStock(adjustmentDto, req.user.id);
+  }
+
+  /**
+   * GET /inventory/reports/export/finished-goods
+   * Export Finished Goods report to Excel
+   *
+   * Query params:
+   * - startDate: YYYY-MM-DD (optional)
+   * - endDate: YYYY-MM-DD (optional)
+   *
+   * Returns Excel file with metadata header and professional formatting
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('reports/export/finished-goods')
+  async exportFinishedGoodsToExcel(
+    @Query() options: ExcelExportOptionsDto,
+    @Req() req: AuthRequest,
+  ) {
+    // Prepare metadata for Excel header
+    const metadata = {
+      userName: req.user?.name || 'User',
+      exportedAt: new Date().toLocaleString('id-ID', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    };
+
+    const buffer = await this.excelExportService.exportFinishedGoodsToExcel(
+      options,
+      metadata,
+    );
+
+    // Set response headers for file download
+    req.res!.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    req.res!.setHeader(
+      'Content-Disposition',
+      `attachment; filename="Laporan-Barang-Jadi-${new Date().toISOString().split('T')[0]}.xlsx"`,
+    );
+
+    return req.res!.send(buffer);
+  }
+
+  /**
+   * GET /inventory/reports/export/materials
+   * Export Materials report to Excel
+   *
+   * Query params:
+   * - startDate: YYYY-MM-DD (optional)
+   * - endDate: YYYY-MM-DD (optional)
+   * - mainCategory: string (optional)
+   *
+   * Returns Excel file with metadata header and professional formatting
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('reports/export/materials')
+  async exportMaterialsToExcel(
+    @Query() options: ExcelExportOptionsDto,
+    @Req() req: AuthRequest,
+  ) {
+    // Prepare metadata for Excel header
+    const metadata = {
+      userName: req.user?.name || 'User',
+      exportedAt: new Date().toLocaleString('id-ID', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    };
+
+    const buffer = await this.excelExportService.exportMaterialsToExcel(
+      options,
+      metadata,
+    );
+
+    // Set response headers for file download
+    req.res!.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    req.res!.setHeader(
+      'Content-Disposition',
+      `attachment; filename="Laporan-Material-${new Date().toISOString().split('T')[0]}.xlsx"`,
+    );
+
+    return req.res!.send(buffer);
+  }
+
+  // ==================== STOCK OPNAME (Improved Workflow B) ====================
+
+  /**
+   * POST /inventory/stock-opname/batch-save
+   * Batch save Stock Opname entries (SO FISIK input di system)
+   *
+   * Workflow B:
+   * - Input SO FISIK di system (editable table)
+   * - Batch save multiple products
+   * - Auto-calculate selisih
+   * - Session-based (save progress)
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.UPDATE}`)
+  @Post('stock-opname/batch-save')
+  @HttpCode(HttpStatus.CREATED)
+  async batchSaveStockOpname(
+    @Body() dto: BatchStockOpnameSaveDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.stockOpnameService.batchSave(dto, req.user.id);
+  }
+
+  /**
+   * GET /inventory/stock-opname/session
+   * Get Stock Opname session data for display/edit
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('stock-opname/session')
+  async getStockOpnameSession(@Query() filters: StockOpnameFiltersDto) {
+    return this.stockOpnameService.getSession(filters);
+  }
+
+  /**
+   * GET /inventory/stock-opname/sessions
+   * Get list of all Stock Opname sessions (history)
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('stock-opname/sessions')
+  async getStockOpnameSessions() {
+    return this.stockOpnameService.getSessions();
+  }
+
+  /**
+   * POST /inventory/stock-opname/finalize/:sessionDate
+   * Finalize Stock Opname session (mark as COMPLETED)
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.UPDATE}`)
+  @Post('stock-opname/finalize/:sessionDate')
+  @HttpCode(HttpStatus.OK)
+  async finalizeStockOpname(
+    @Param('sessionDate') sessionDate: string,
+    @Req() req: AuthRequest,
+  ) {
+    return this.stockOpnameService.finalizeSession(sessionDate, req.user.id);
+  }
+
+  /**
+   * DELETE /inventory/stock-opname/session/:sessionDate
+   * Delete Stock Opname session (clear draft data)
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.DELETE}`)
+  @Delete('stock-opname/session/:sessionDate')
+  async deleteStockOpnameSession(@Param('sessionDate') sessionDate: string) {
+    return this.stockOpnameService.deleteSession(sessionDate);
+  }
+
+  /**
+   * GET /inventory/stock-opname/export
+   * Export Final Excel with SO FISIK data included
+   *
+   * Called after Stock Opname finalized
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('stock-opname/export')
+  async exportStockOpnameToExcel(
+    @Query() options: ExcelExportOptionsDto,
+    @Req() req: any,
+  ) {
+    const buffer =
+      await this.excelExportService.exportStockOpnameWithData(options);
+
+    // Set response headers for file download
+    req.res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    req.res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="Stock-Opname-${options.startDate || 'Final'}.xlsx"`,
+    );
+
+    return req.res.send(buffer);
   }
 }

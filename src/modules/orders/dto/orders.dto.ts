@@ -27,9 +27,8 @@ export class OrderDto {
   @IsDate()
   invoiceDate?: Date;
 
-  @IsOptional()
   @IsString()
-  customerNotes?: string;
+  customerNotes: string;
 
   @IsArray()
   @ValidateNested({ each: true })
@@ -89,7 +88,6 @@ export class CreateOrderDto extends PickType(OrderDto, [
   'invoiceDate',
   'orderItems',
   'internalNotes',
-  'customerNotes',
   'customerNotes',
   'createdBy',
 ]) {}

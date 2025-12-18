@@ -13,12 +13,14 @@ import { Products } from '../../products/entity/products.entity';
 import { Users } from '../../users/entities/users.entity';
 import { ProductionMaterialUsage } from './production-material-usage.entity';
 import { ProductionStageTracking } from './production-stage-tracking.entity';
+import { ProductionBottlingOutput } from './production-bottling-output.entity';
 import { InventoryTransactions } from '../../inventory/entity/inventory-transactions.entity';
 
 /**
  * Production Batch Status
  */
 export enum BatchStatus {
+  DRAFT = 'DRAFT', // Saved but not finalized (for delayed data entry)
   PLANNED = 'PLANNED', // Batch planned, not started
   IN_PROGRESS = 'IN_PROGRESS', // Production in progress
   QC_PENDING = 'QC_PENDING', // Waiting for QC approval
@@ -285,6 +287,13 @@ export class ProductionBatches extends BaseEntity {
   notes: string | null;
 
   @Column({
+    type: 'text',
+    nullable: true,
+    comment: 'General notes about production process, issues, observations',
+  })
+  productionNotes: string | null;
+
+  @Column({
     type: 'varchar',
     length: 200,
     nullable: true,
@@ -314,6 +323,12 @@ export class ProductionBatches extends BaseEntity {
     cascade: true,
   })
   stages: ProductionStageTracking[];
+
+  @OneToMany(() => ProductionBottlingOutput, (output) => output.batch, {
+    cascade: true,
+  })
+  bottlingOutputs: ProductionBottlingOutput[];
+
   // Audit
   @Column({ nullable: true })
   createdBy: number;

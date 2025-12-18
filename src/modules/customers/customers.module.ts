@@ -8,6 +8,7 @@ import { Users } from '../users/entities/users.entity';
 import { RedisModule } from '../redis/redis.module';
 import { PermissionGuard } from '../auth/guards/permission.guard';
 import { Orders } from '../orders/entity/orders.entity';
+import { ProductCodes } from '../products/entity/product_codes.entity';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { Orders } from '../orders/entity/orders.entity';
       CustomerProductCatalogs,
       Users,
       Orders,
+      ProductCodes,
     ]),
     RedisModule,
   ],

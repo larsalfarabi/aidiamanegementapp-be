@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+     <meta charset="UTF-8">
+     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+     <title>Export Selesai - Sales AIDIA</title>
+     <!-- Google Fonts: Plus Jakarta Sans -->
+     <link rel="preconnect" href="https://fonts.googleapis.com">
+     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+          rel="stylesheet">
+     <style>
+          * {
+               margin: 0;
+               padding: 0;
+               box-sizing: border-box;
+          }
+
+          body {
+               font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
+               line-height: 1.6;
+               color: #333333;
+               background-color: #f4f4f4;
+          }
+
+          .email-wrapper {
+               max-width: 600px;
+               margin: 0 auto;
+               background-color: #ffffff;
+          }
+
+          .header {
+               background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+               padding: 40px 30px;
+               text-align: center;
+          }
+
+          .header .icon {
+               font-size: 48px;
+               margin-bottom: 10px;
+          }
+
+          .header h1 {
+               color: #ffffff;
+               font-size: 24px;
+               font-weight: 600;
+               margin: 0;
+          }
+
+          .content {
+               padding: 40px 30px;
+          }
+
+          .greeting {
+               font-size: 18px;
+               color: #333333;
+               margin-bottom: 20px;
+          }
+
+          .message {
+               font-size: 15px;
+               color: #666666;
+               margin-bottom: 30px;
+               line-height: 1.7;
+          }
+
+          .details-box {
+               background-color: #f8f9fa;
+               border-left: 4px solid #667eea;
+               padding: 20px;
+               margin: 30px 0;
+               border-radius: 4px;
+          }
+
+          .detail-item {
+               display: flex;
+               justify-content: space-between;
+               padding: 10px 0;
+               border-bottom: 1px solid #e9ecef;
+          }
+
+          .detail-item:last-child {
+               border-bottom: none;
+          }
+
+          .detail-label {
+               color: #666666;
+               font-weight: 500;
+          }
+
+          .detail-value {
+               color: #333333;
+               font-weight: 600;
+               text-align: right;
+          }
+
+          .download-button {
+               display: inline-block;
+               background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+               color: #ffffff;
+               text-decoration: none;
+               padding: 14px 32px;
+               border-radius: 6px;
+               font-weight: 600;
+               font-size: 15px;
+               margin: 20px 0;
+               transition: transform 0.2s;
+          }
+
+          .download-button:hover {
+               transform: translateY(-2px);
+          }
+
+          .info-box {
+               background-color: #fff9e6;
+               border-left: 4px solid #ffc107;
+               padding: 15px;
+               margin: 20px 0;
+               border-radius: 4px;
+          }
+
+          .info-box p {
+               font-size: 13px;
+               color: #856404;
+               margin: 0;
+          }
+
+          .footer {
+               background-color: #f8f9fa;
+               padding: 30px;
+               text-align: center;
+               border-top: 1px solid #e9ecef;
+          }
+
+          .footer p {
+               font-size: 12px;
+               color: #999999;
+               margin: 8px 0;
+          }
+
+          @media only screen and (max-width: 600px) {
+               .header {
+                    padding: 30px 20px;
+               }
+
+               .content {
+                    padding: 30px 20px;
+               }
+
+               .detail-item {
+                    flex-direction: column;
+               }
+
+               .detail-value {
+                    text-align: left;
+                    margin-top: 5px;
+               }
+          }
+     </style>
+</head>
+
+<body>
+     <div class="email-wrapper">
+          <!-- Header -->
+          <div class="header">
+               <div class="icon">✅</div>
+               <h1>Export Berhasil</h1>
+          </div>
+
+          <!-- Content -->
+          <div class="content">
+               <p class="greeting">Halo, <strong>{{userName}}</strong>!</p>
+
+               <p class="message">
+                    Export laporan Anda telah selesai diproses. File Excel siap untuk diunduh.
+               </p>
+
+               <!-- Details Box -->
+               <div class="details-box">
+                    <div class="detail-item">
+                         <span class="detail-label">Jenis Laporan</span>
+                         <span class="detail-value">{{reportType}}</span>
+                    </div>
+                    <div class="detail-item">
+                         <span class="detail-label">Periode</span>
+                         <span class="detail-value">{{period}}</span>
+                    </div>
+                    <div class="detail-item">
+                         <span class="detail-label">Jumlah Data</span>
+                         <span class="detail-value">{{recordCount}} records</span>
+                    </div>
+                    <div class="detail-item">
+                         <span class="detail-label">Nama File</span>
+                         <span class="detail-value">{{fileName}}</span>
+                    </div>
+                    <div class="detail-item">
+                         <span class="detail-label">Waktu Export</span>
+                         <span class="detail-value">{{exportedAt}}</span>
+                    </div>
+               </div>
+
+               <!-- Download Button -->
+               <center>
+                    <a href="{{downloadUrl}}" class="download-button">📥 Download File Excel</a>
+               </center>
+
+               <!-- Warning Info -->
+               <div class="info-box">
+                    <p>
+                         <strong>⚠️ Catatan:</strong>
+                         Link download akan kedaluwarsa dalam 24 jam. Silakan download file sebelum waktu tersebut.
+                    </p>
+               </div>
+
+               <!-- IT Support Contact -->
+               <div
+                    style="background-color: #e8f4f8; border-left: 4px solid #0288d1; padding: 15px; margin: 20px 0; border-radius: 4px;">
+                    <p style="font-size: 13px; color: #01579b; margin: 0;">
+                         <strong>💬 Butuh Bantuan?</strong><br>
+                         Jika mengalami kendala dalam penggunaan sistem, silakan hubungi Tim IT kami melalui WhatsApp:
+                         <a href="https://wa.me/6287789765911"
+                              style="color: #0288d1; text-decoration: none; font-weight: 600;">+62 877-8976-5911</a>
+                    </p>
+               </div>
+          </div>
+
+          <!-- Footer -->
+          <div class="footer">
+               <p><strong>Sales AIDIA</strong></p>
+               <p>Email ini dikirim secara otomatis oleh sistem Sales AIDIA.<br>Mohon tidak membalas email ini.</p>
+          </div>
+     </div>
+</body>
+
+</html>

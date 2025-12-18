@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Patch,
   Delete,
   Body,
   Param,
@@ -23,6 +24,7 @@ import {
   RecordStageDto,
   FilterFormulaDto,
   FilterBatchDto,
+  CompleteBatchDto,
 } from './dto';
 
 @Controller('production')
@@ -194,5 +196,47 @@ export class ProductionController {
   ) {
     const userId = req.user?.id || 1;
     return this.batchService.cancelBatch(id, reason, userId);
+  }
+
+  /**
+   * PATCH /production/batches/:id/complete
+   * Complete production batch (REDESIGNED - Dec 2024)
+   *
+   * Purpose:
+   * - Simplified single-endpoint workflow (replaces startProduction + recordStage)
+   * - Support multi-size bottling from single concentrate batch
+   * - Integrate material tracking with inventory transactions
+   * - Enable draft mode for delayed data entry
+   *
+   * Request Body:
+   * - actualConcentrate: Actual concentrate produced (liters)
+   * - bottlingOutputs: Array of { productCodeId, quantity, wasteQuantity, notes }
+   * - materialUsages: Array of { materialProductCodeId, actualQuantity, unit, unitCost, notes }
+   * - isDraft: true = save as DRAFT, false = finalize as COMPLETED
+   * - productionNotes: General production notes
+   * - performedBy: Staff name
+   *
+   * Example:
+   * ```json
+   * {
+   *   "actualConcentrate": 40,
+   *   "bottlingOutputs": [
+   *     { "productCodeId": 101, "quantity": 60, "wasteQuantity": 5 },
+   *     { "productCodeId": 102, "quantity": 40, "wasteQuantity": 2 }
+   *   ],
+   *   "materialUsages": [...],
+   *   "isDraft": false
+   * }
+   * ```
+   */
+  @RequirePermissions(`${Resource.BATCH}:${Action.UPDATE}`)
+  @Patch('batches/:id/complete')
+  async completeBatch(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CompleteBatchDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.batchService.completeBatch(id, dto, userId);
   }
 }

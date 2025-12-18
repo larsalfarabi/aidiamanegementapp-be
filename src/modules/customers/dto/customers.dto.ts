@@ -141,3 +141,47 @@ export class UpdateCustomerProductCatalogDto extends PickType(
     'updatedBy',
   ],
 ) {}
+
+// Excel upload response types
+export interface ExcelUploadResult {
+  totalRows: number;
+  successCount: number;
+  failureCount: number;
+  errors: ExcelUploadError[];
+  successDetails: ExcelUploadSuccess[];
+}
+
+export interface ExcelUploadError {
+  row: number;
+  customerCode?: string;
+  customerName?: string;
+  errors: string[];
+}
+
+export interface ExcelUploadSuccess {
+  row: number;
+  customerCode: string;
+  customerName: string;
+}
+
+// Catalog Excel upload response types
+export interface CatalogExcelUploadResult {
+  totalRows: number;
+  successCount: number;
+  failureCount: number;
+  errors: CatalogExcelUploadError[];
+  successDetails: CatalogExcelUploadSuccess[];
+}
+
+export interface CatalogExcelUploadError {
+  row: number;
+  productCode?: string;
+  errors: string[];
+}
+
+export interface CatalogExcelUploadSuccess {
+  row: number;
+  productCode: string;
+  customerPrice: number;
+  discountPercentage?: number;
+}

@@ -7,6 +7,11 @@ import {
   UseGuards,
   Delete,
   Body,
+  UseInterceptors,
+  UploadedFile,
+  Res,
+  HttpStatus,
+  BadRequestException,
 } from '@nestjs/common';
 import { CustomersService } from './customers.service';
 import {
@@ -27,6 +32,8 @@ import {
   UpdateCustomerProductCatalogDto,
 } from './dto/customers.dto';
 import { InjectDeletedBy } from '../../common/decorator/inject-deletedBy.decorator';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { Response } from 'express';
 
 @UseGuards(JwtGuard, PermissionGuard)
 @Controller('customers')
@@ -111,5 +118,91 @@ export class CustomersController {
   @RequirePermissions(`${Resource.CUSTOMER}:${Action.DELETE}`)
   async removeProductFromCatalog(@Param('id') id: string) {
     return this.customersService.removeProductFromCatalog(+id);
+  }
+
+  @Get('excel/template')
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.VIEW}`)
+  async downloadTemplate(@Res({ passthrough: false }) res: Response) {
+    const buffer = await this.customersService.generateExcelTemplate();
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename=Template_Upload_Customer.xlsx',
+    );
+
+    res.send(buffer);
+  }
+
+  @Post('excel/upload')
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.CREATE}`)
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadExcel(
+    @UploadedFile() file: any,
+    @InjectCreatedBy() payload: any,
+  ) {
+    if (!file) {
+      throw new BadRequestException('File is required');
+    }
+
+    const result = await this.customersService.uploadExcelFile(
+      file.buffer,
+      payload.createdBy,
+    );
+
+    return {
+      statusCode: HttpStatus.OK,
+      message: 'Excel file processed',
+      data: result,
+    };
+  }
+
+  @Get(':id/catalog/excel/template')
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.VIEW}`)
+  async downloadCatalogTemplate(
+    @Param('id') id: string,
+    @Res({ passthrough: false }) res: Response,
+  ) {
+    const buffer =
+      await this.customersService.generateCatalogExcelTemplate(+id);
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=Template_Upload_Catalog_Customer_${id}.xlsx`,
+    );
+
+    res.send(buffer);
+  }
+
+  @Post(':id/catalog/excel/upload')
+  @RequirePermissions(`${Resource.CUSTOMER}:${Action.UPDATE}`)
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadCatalogExcel(
+    @Param('id') id: string,
+    @UploadedFile() file: any,
+    @InjectCreatedBy() payload: any,
+  ) {
+    if (!file) {
+      throw new BadRequestException('File is required');
+    }
+
+    const result = await this.customersService.uploadCatalogExcelFile(
+      +id,
+      file.buffer,
+      payload.createdBy,
+    );
+
+    return {
+      statusCode: HttpStatus.OK,
+      message: 'Catalog Excel file processed',
+      data: result,
+    };
   }
 }

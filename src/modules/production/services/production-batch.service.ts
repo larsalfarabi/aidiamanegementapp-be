@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   Logger,
+  ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, Between } from 'typeorm';
@@ -12,14 +13,21 @@ import {
   ProductionFormulas,
   ProductionStageTracking,
   ProductionMaterialUsage,
+  ProductionBottlingOutput,
   BatchStatus,
   QCStatus,
   ProductionStage,
   StageStatus,
 } from '../entities';
-import { CreateBatchDto, RecordStageDto, FilterBatchDto } from '../dto';
+import { 
+  CreateBatchDto, 
+  RecordStageDto, 
+  FilterBatchDto,
+  CompleteBatchDto,
+} from '../dto';
 import { ProductionFormulaService } from './production-formula.service';
 import { InventoryLegacyService } from '../../inventory/services/inventory-legacy.service';
+import { ProductCodes } from '../../products/entity/product_codes.entity';
 
 @Injectable()
 export class ProductionBatchService extends BaseResponse {
@@ -34,6 +42,10 @@ export class ProductionBatchService extends BaseResponse {
     private readonly stageRepository: Repository<ProductionStageTracking>,
     @InjectRepository(ProductionMaterialUsage)
     private readonly materialUsageRepository: Repository<ProductionMaterialUsage>,
+    @InjectRepository(ProductionBottlingOutput)
+    private readonly bottlingOutputRepository: Repository<ProductionBottlingOutput>,
+    @InjectRepository(ProductCodes)
+    private readonly productCodeRepository: Repository<ProductCodes>,
     private readonly dataSource: DataSource,
     private readonly productionFormulaService: ProductionFormulaService,
     private readonly inventoryService: InventoryLegacyService,
@@ -45,6 +57,9 @@ export class ProductionBatchService extends BaseResponse {
    * Generate Batch Number
    * Format: BATCH-YYYYMMDD-XXX
    * Example: BATCH-20250111-001
+   * 
+   * Uses MAX(sequence) to find the highest existing number for the date,
+   * preventing duplicates even after batch deletion.
    */
   private async generateBatchNumber(productionDate: Date): Promise<string> {
     const dateStr = productionDate
@@ -52,20 +67,37 @@ export class ProductionBatchService extends BaseResponse {
       .split('T')[0]
       .replace(/-/g, '');
 
-    // Get today's batches count
+    // Get today's batches to find max sequence number
     const startOfDay = new Date(productionDate);
     startOfDay.setHours(0, 0, 0, 0);
     const endOfDay = new Date(productionDate);
     endOfDay.setHours(23, 59, 59, 999);
 
-    const todayBatchesCount = await this.batchRepository.count({
+    // Find all batch numbers for this date
+    const todayBatches = await this.batchRepository.find({
       where: {
         productionDate: Between(startOfDay, endOfDay),
       },
+      select: ['batchNumber'],
     });
 
-    const sequence = (todayBatchesCount + 1).toString().padStart(3, '0');
-    return `BATCH-${dateStr}-${sequence}`;
+    // Extract sequence numbers and find the maximum
+    let maxSequence = 0;
+    const prefix = `BATCH-${dateStr}-`;
+    
+    for (const batch of todayBatches) {
+      if (batch.batchNumber.startsWith(prefix)) {
+        const sequenceStr = batch.batchNumber.substring(prefix.length);
+        const sequence = parseInt(sequenceStr, 10);
+        if (!isNaN(sequence) && sequence > maxSequence) {
+          maxSequence = sequence;
+        }
+      }
+    }
+
+    // Next sequence is max + 1
+    const nextSequence = (maxSequence + 1).toString().padStart(3, '0');
+    return `BATCH-${dateStr}-${nextSequence}`;
   }
 
   /**
@@ -192,6 +224,7 @@ export class ProductionBatchService extends BaseResponse {
         totalMaterialCost: 0,
         costPerUnit: 0,
         status: BatchStatus.PLANNED,
+        startedAt: new Date(), // ✅ FIX: Set startedAt saat batch dibuat (untuk tracking kolom "Mulai")
         performedBy: null, // Will be set when production starts
         notes: dto.notes || null,
         createdBy: userId,
@@ -720,6 +753,8 @@ export class ProductionBatchService extends BaseResponse {
           'formula.materials.materialProductCode',
           'productCode',
           'productCode.product',
+          'product',
+          'product.category',
           'stages',
           'materialUsages',
           'materialUsages.materialProductCode',
@@ -730,6 +765,32 @@ export class ProductionBatchService extends BaseResponse {
 
       if (!batch) {
         throw new NotFoundException(`Batch with ID ${id} not found`);
+      }
+
+      // Fetch available product sizes (ProductCodes) for this product concept
+      // Filter: Same product + Finished Goods category + Active
+      if (batch.product) {
+        const productCodes = await this.productCodeRepository.find({
+          where: {
+            product: { id: batch.product.id },
+            isActive: true,
+            isDeleted: false,
+          },
+          relations: ['product', 'category', 'size'],
+        });
+
+        // Filter only finished goods (main category level 0)
+        const finishedGoodsCodes = productCodes.filter((pc) => {
+          const categoryName = pc.category?.name?.toLowerCase() || '';
+          return (
+            categoryName.includes('jadi') ||
+            categoryName.includes('finished') ||
+            categoryName.includes('barang jadi')
+          );
+        });
+
+        // Attach to batch for frontend use
+        (batch as any).product.productCodes = finishedGoodsCodes;
       }
 
       return this._success('Batch retrieved successfully', batch);
@@ -894,6 +955,341 @@ export class ProductionBatchService extends BaseResponse {
       );
       throw error;
     }
+  }
+
+  /**
+   * Complete Production Batch (REDESIGNED - Dec 2024)
+   *
+   * Purpose:
+   * - Simplified single-endpoint workflow (replaces startProduction + recordStage)
+   * - Support multi-size bottling from single concentrate batch
+   * - Integrate material tracking with inventory transactions
+   * - Enable draft mode for delayed data entry
+   *
+   * Business Flow:
+   * 1. Validate batch exists and is PLANNED
+   * 2. Validate bottling outputs match product concept (name, category, type)
+   * 3. Save material usage records
+   * 4. Create bottling output records
+   * 5. If NOT draft:
+   *    a. Create PRODUCTION_OUT transactions for materials
+   *    b. Create PRODUCTION_IN transactions for each bottling output
+   *    c. Update batch status to COMPLETED
+   * 6. If draft: Save as DRAFT status for later finalization
+   *
+   * Example:
+   * Batch: Jambu Merah 40L concentrate
+   * - actualConcentrate: 40
+   * - bottlingOutputs: [
+   *     { productCodeId: 101, quantity: 60, wasteQuantity: 5 },  // JM-600ML
+   *     { productCodeId: 102, quantity: 40, wasteQuantity: 2 }   // JM-1000ML
+   *   ]
+   * - Creates 2 PRODUCTION_IN transactions (one per size)
+   * - Creates PRODUCTION_OUT for materials consumed
+   */
+  async completeBatch(
+    batchId: number,
+    dto: CompleteBatchDto,
+    userId: number,
+  ) {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // 1. Load batch with relations
+      const batch = await queryRunner.manager.findOne(ProductionBatches, {
+        where: { id: batchId },
+        relations: ['formula', 'product', 'productCode', 'materialUsages'],
+      });
+
+      if (!batch) {
+        throw new NotFoundException(`Batch with ID ${batchId} not found`);
+      }
+
+      // 2. Validate batch status
+      if (batch.status !== BatchStatus.PLANNED && batch.status !== BatchStatus.DRAFT) {
+        throw new BadRequestException(
+          `Cannot complete batch in ${batch.status} status. Only PLANNED or DRAFT batches can be completed.`,
+        );
+      }
+
+      // 3. Validate bottling outputs match product concept
+      await this.validateBottlingOutputs(
+        batch.productId,
+        dto.bottlingOutputs,
+        queryRunner,
+      );
+
+      // 4. Update batch with concentrate and production info
+      batch.actualConcentrate = dto.actualConcentrate;
+      batch.notes = dto.notes || batch.notes;
+      batch.productionNotes = dto.productionNotes || null;
+      batch.performedBy = dto.performedBy || null;
+      batch.completedAt = new Date();
+      batch.updatedBy = userId;
+
+      // Calculate total good quantity from all bottling outputs
+      const totalGoodQuantity = dto.bottlingOutputs.reduce(
+        (sum, output) => sum + Number(output.quantity),
+        0,
+      );
+      const totalWasteQuantity = dto.bottlingOutputs.reduce(
+        (sum, output) => sum + Number(output.wasteQuantity || 0),
+        0,
+      );
+
+      batch.actualQuantity = totalGoodQuantity;
+      batch.wasteQuantity = totalWasteQuantity;
+
+      // Set draft or completed status
+      if (dto.isDraft) {
+        batch.status = BatchStatus.DRAFT;
+      } else {
+        batch.status = BatchStatus.COMPLETED;
+      }
+
+      await queryRunner.manager.save(batch);
+
+      // 5. Save material usages
+      const materialUsages = await this.saveMaterialUsages(
+        batch,
+        dto.materialUsages,
+        userId,
+        queryRunner,
+      );
+
+      // Calculate total material cost
+      const totalMaterialCost = materialUsages.reduce(
+        (sum, usage) => sum + Number(usage.totalCost),
+        0,
+      );
+      batch.totalMaterialCost = totalMaterialCost;
+      await queryRunner.manager.save(batch);
+
+      // 6. Create bottling output records
+      const bottlingOutputs = await this.createBottlingOutputs(
+        batch,
+        dto.bottlingOutputs,
+        userId,
+        queryRunner,
+      );
+
+      // 7. Create inventory transactions (only if NOT draft)
+      let inventoryTransactions = [];
+      if (!dto.isDraft) {
+        // Create PRODUCTION_OUT for materials
+        await this.createMaterialOutTransactions(
+          batch,
+          materialUsages,
+          userId,
+          queryRunner,
+        );
+
+        // Create PRODUCTION_IN for each bottling output
+        inventoryTransactions = await this.createBottlingInTransactions(
+          batch,
+          bottlingOutputs,
+          userId,
+          queryRunner,
+        );
+      }
+
+      await queryRunner.commitTransaction();
+      await queryRunner.release();
+
+      this.logger.log(
+        `Batch ${batch.batchNumber} ${dto.isDraft ? 'saved as draft' : 'completed'}: ` +
+        `${bottlingOutputs.length} bottling outputs, ` +
+        `${materialUsages.length} materials, ` +
+        `${inventoryTransactions.length} inventory transactions`,
+      );
+
+      return this._success(
+        dto.isDraft
+          ? 'Batch saved as draft successfully'
+          : 'Batch completed successfully',
+        {
+          batchId: batch.id,
+          batchNumber: batch.batchNumber,
+          status: batch.status,
+          actualConcentrate: batch.actualConcentrate,
+          totalGoodQuantity,
+          totalWasteQuantity,
+          bottlingOutputsCount: bottlingOutputs.length,
+          totalMaterialCost,
+          inventoryTransactionsCount: inventoryTransactions.length,
+        },
+      );
+    } catch (error) {
+      if (queryRunner.isTransactionActive) {
+        await queryRunner.rollbackTransaction();
+      }
+      await queryRunner.release();
+      this.logger.error(
+        `Failed to complete batch ${batchId}`,
+        error.stack,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Validate that bottling outputs match batch's product concept
+   */
+  private async validateBottlingOutputs(
+    productId: number,
+    outputs: any[],
+    queryRunner: any,
+  ) {
+    const batchProduct = await queryRunner.manager.findOne(
+      queryRunner.manager.getRepository('products').target,
+      {
+        where: { id: productId },
+        relations: ['category'],
+      },
+    );
+
+    if (!batchProduct) {
+      throw new NotFoundException('Batch product not found');
+    }
+
+    for (const output of outputs) {
+      const productCode = await queryRunner.manager.findOne(ProductCodes, {
+        where: { id: output.productCodeId },
+        relations: ['product', 'product.category'],
+      });
+
+      if (!productCode) {
+        throw new NotFoundException(
+          `Product code ${output.productCodeId} not found`,
+        );
+      }
+
+      // Validate product concept match
+      if (productCode.product.id !== batchProduct.id) {
+        throw new BadRequestException(
+          `Product code ${productCode.productCode} does not match batch product concept. ` +
+          `Expected: ${batchProduct.productName}, ` +
+          `Got: ${productCode.product.productName}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Save material usages
+   */
+  private async saveMaterialUsages(
+    batch: ProductionBatches,
+    materialUsages: any[],
+    userId: number,
+    queryRunner: any,
+  ): Promise<ProductionMaterialUsage[]> {
+    const savedUsages: ProductionMaterialUsage[] = [];
+
+    for (const usageDto of materialUsages) {
+      // Find existing usage or create new
+      let usage = batch.materialUsages?.find(
+        (u) => u.materialProductCodeId === usageDto.materialProductCodeId,
+      );
+
+      if (!usage) {
+        usage = new ProductionMaterialUsage();
+        usage.batchId = batch.id;
+        usage.materialProductCodeId = usageDto.materialProductCodeId;
+        usage.createdBy = userId;
+      }
+
+      usage.actualQuantity = usageDto.actualQuantity;
+      usage.unit = usageDto.unit;
+      usage.unitCost = usageDto.unitCost;
+      usage.totalCost = usageDto.actualQuantity * usageDto.unitCost;
+      usage.notes = usageDto.notes;
+      usage.updatedBy = userId;
+
+      const savedUsage = await queryRunner.manager.save(usage);
+      savedUsages.push(savedUsage);
+    }
+
+    return savedUsages;
+  }
+
+  /**
+   * Create bottling output records
+   */
+  private async createBottlingOutputs(
+    batch: ProductionBatches,
+    outputs: any[],
+    userId: number,
+    queryRunner: any,
+  ): Promise<ProductionBottlingOutput[]> {
+    const bottlingOutputs: ProductionBottlingOutput[] = [];
+
+    for (const outputDto of outputs) {
+      const output = new ProductionBottlingOutput();
+      output.batchId = batch.id;
+      output.productCodeId = outputDto.productCodeId;
+      output.quantity = outputDto.quantity;
+      output.wasteQuantity = outputDto.wasteQuantity || 0;
+      output.notes = outputDto.notes;
+      output.createdBy = userId;
+
+      const savedOutput = await queryRunner.manager.save(output);
+      bottlingOutputs.push(savedOutput);
+    }
+
+    return bottlingOutputs;
+  }
+
+  /**
+   * Create PRODUCTION_OUT transactions for materials
+   */
+  private async createMaterialOutTransactions(
+    batch: ProductionBatches,
+    materialUsages: ProductionMaterialUsage[],
+    userId: number,
+    queryRunner: any,
+  ) {
+    const materials = materialUsages.map((usage) => ({
+      productCodeId: usage.materialProductCodeId,
+      quantity: usage.actualQuantity,
+      unit: usage.unit,
+    }));
+
+    await this.inventoryService.recordMaterialProduction(
+      batch.batchNumber,
+      materials,
+      userId,
+      batch.performedBy || undefined,
+      `Material consumed for batch ${batch.batchNumber}`,
+    );
+  }
+
+  /**
+   * Create PRODUCTION_IN transactions for bottling outputs
+   */
+  private async createBottlingInTransactions(
+    batch: ProductionBatches,
+    outputs: ProductionBottlingOutput[],
+    userId: number,
+    queryRunner: any,
+  ): Promise<any[]> {
+    const transactions = [];
+
+    for (const output of outputs) {
+      const transaction = await this.inventoryService.recordFinishedGoodsProduction(
+        output.productCodeId,
+        output.quantity, // Only good quantity (not waste)
+        batch.batchNumber,
+        userId,
+        batch.performedBy || undefined,
+        `Production from batch ${batch.batchNumber}${output.notes ? ` - ${output.notes}` : ''}`,
+      );
+      transactions.push(transaction);
+    }
+
+    return transactions;
   }
 
 }
