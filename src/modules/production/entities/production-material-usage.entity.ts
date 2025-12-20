@@ -2,7 +2,6 @@ import { Entity, Column, ManyToOne, JoinColumn, Index } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
 import { ProductionBatches } from './production-batches.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
-import { ProductCategories } from '../../products/entity/product_categories.entity';
 import { Users } from '../../users/entities/users.entity';
 
 /**
@@ -39,16 +38,6 @@ export class ProductionMaterialUsage extends BaseEntity {
   batch: ProductionBatches;
 
   // Material Info
-  @Column({
-    nullable: true,
-    comment: 'Material category (FK to product_categories)',
-  })
-  materialCategoryId: number;
-
-  @ManyToOne(() => ProductCategories, { eager: true })
-  @JoinColumn({ name: 'materialCategoryId' })
-  materialCategory: ProductCategories;
-
   @Column({
     comment: 'Material product code used',
   })
@@ -181,12 +170,5 @@ export class ProductionMaterialUsage extends BaseEntity {
     if (absVariance < 3) return 'good';
     if (absVariance < 5) return 'warning';
     return 'critical';
-  }
-
-  /**
-   * Virtual Property: Material Category Name
-   */
-  get materialCategoryName(): string {
-    return this.materialCategory?.name || 'Unknown';
   }
 }

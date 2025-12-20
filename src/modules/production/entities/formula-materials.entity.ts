@@ -95,13 +95,6 @@ export class FormulaMaterials extends BaseEntity {
   })
   sequence: number;
 
-  @Column({
-    type: 'text',
-    nullable: true,
-    comment: 'Notes about this material usage',
-  })
-  notes: string | null;
-
   // Status
   @Column({
     default: true,

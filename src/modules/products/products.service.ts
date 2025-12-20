@@ -25,6 +25,7 @@ import { Products } from './entity/products.entity';
 import { ProductSizes } from './entity/product_sizes.entity';
 import { ProductCategories } from './entity/product_categories.entity';
 import { ProductCodeQueryDto, QueryProductDto } from './dto/products.dto';
+import { NotificationEventEmitter } from '../notifications/services/notification-event-emitter.service';
 
 @Injectable()
 export class ProductsService extends BaseResponse {
@@ -39,6 +40,7 @@ export class ProductsService extends BaseResponse {
     @InjectRepository(ProductCategories)
     private readonly productCategoryRepo: Repository<ProductCategories>,
     @Inject(CACHE_MANAGER) private cacheManager: Cache,
+    private readonly notificationEventEmitter: NotificationEventEmitter,
   ) {
     super();
   }
@@ -200,12 +202,28 @@ export class ProductsService extends BaseResponse {
     }
 
     // ✅ UPDATED: Menggunakan relasi baru (product, category, size)
-    await this.productCodeRepo.save({
+    const savedProductCode = await this.productCodeRepo.save({
       ...payload,
       product: { id: payload.product } as any,
       category: { id: payload.category } as any,
       size: { id: payload.size } as any,
     });
+
+    // Fetch complete data for notification
+    const productCode = await this.productCodeRepo.findOne({
+      where: { id: savedProductCode.id },
+      relations: ['product', 'category', 'size'],
+    });
+
+    // Emit notification
+    if (productCode) {
+      await this.notificationEventEmitter.emitProductCreated({
+        productCodeId: productCode.id,
+        productCode: productCode.productCode,
+        productName: productCode.product?.name || 'Unknown',
+        categoryName: productCode.category?.name || 'Unknown',
+      });
+    }
 
     return this._success('Berhasil membuat product code');
   }
@@ -216,12 +234,18 @@ export class ProductsService extends BaseResponse {
   ): Promise<ResponseSuccess> {
     const check = await this.productCodeRepo.findOne({
       where: { id },
+      relations: ['product', 'category'],
     });
     if (!check) {
       throw new NotFoundException(
         `Product code dengan ID ${id} tidak ditemukan`,
       );
     }
+
+    // Track if product code changed
+    const oldProductCode = check.productCode;
+    const isProductCodeChanged =
+      payload.productCode && payload.productCode !== oldProductCode;
 
     const validateProductCode = await this.productCodeRepo.findOne({
       where: { productCode: payload.productCode, id: id },
@@ -244,6 +268,33 @@ export class ProductsService extends BaseResponse {
     }
 
     await this.productCodeRepo.update(id, updatePayload);
+
+    // Fetch updated data for notification
+    const updatedProductCode = await this.productCodeRepo.findOne({
+      where: { id },
+      relations: ['product', 'category'],
+    });
+
+    // Emit notifications
+    if (updatedProductCode) {
+      await this.notificationEventEmitter.emitProductUpdated({
+        productCodeId: updatedProductCode.id,
+        productCode: updatedProductCode.productCode,
+        productName: updatedProductCode.product?.name || 'Unknown',
+        categoryName: updatedProductCode.category?.name || 'Unknown',
+      });
+
+      // If product code changed, emit special notification
+      if (isProductCodeChanged) {
+        await this.notificationEventEmitter.emitProductCodeChanged({
+          productCodeId: updatedProductCode.id,
+          oldProductCode,
+          newProductCode: updatedProductCode.productCode,
+          productName: updatedProductCode.product?.name || 'Unknown',
+        });
+      }
+    }
+
     return this._success(`Berhasil mengupdate product code dengan ID ${id}`);
   }
 
@@ -382,12 +433,32 @@ export class ProductsService extends BaseResponse {
         400,
       );
     }
+
+    // Fetch product data before deletion for notification
+    const product = await this.productCodeRepo.findOne({
+      where: { id },
+      relations: ['product', 'category'],
+    });
+    if (!product) {
+      throw new NotFoundException(
+        `Product code dengan ID ${id} tidak ditemukan`,
+      );
+    }
+
     const result = await this.productCodeRepo.update(id, payload);
 
     if (result.affected === 0)
       throw new NotFoundException(
         `Product code dengan ID ${id} tidak ditemukan`,
       );
+
+    // Emit notification
+    await this.notificationEventEmitter.emitProductDeleted({
+      productCodeId: product.id,
+      productCode: product.productCode,
+      productName: product.product?.name || 'Unknown',
+      categoryName: product.category?.name || 'Unknown',
+    });
 
     return this._success(`Berhasil menghapus product code dengan ID ${id}`);
   }

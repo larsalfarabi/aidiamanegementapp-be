@@ -9,6 +9,7 @@ import { RedisModule } from '../redis/redis.module';
 import { PermissionGuard } from '../auth/guards/permission.guard';
 import { Orders } from '../orders/entity/orders.entity';
 import { ProductCodes } from '../products/entity/product_codes.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { ProductCodes } from '../products/entity/product_codes.entity';
       ProductCodes,
     ]),
     RedisModule,
+    NotificationsModule,
   ],
   controllers: [CustomersController],
   providers: [CustomersService, PermissionGuard],

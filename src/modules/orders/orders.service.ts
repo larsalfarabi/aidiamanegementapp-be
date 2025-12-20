@@ -433,6 +433,16 @@ export class OrdersService extends BaseResponse {
       grandTotal: savedOrder.grandTotal,
     });
 
+    // ✅ Emit INVOICE_GENERATED notification (invoice created at order creation)
+    await this.notificationEventEmitter.emitInvoiceGenerated({
+      orderId: savedOrder.id,
+      orderNumber: savedOrder.orderNumber,
+      invoiceNumber: savedOrder.invoiceNumber,
+      customerName: savedOrder.customerName,
+      grandTotal: savedOrder.grandTotal,
+      invoiceDate: savedOrder.invoiceDate,
+    });
+
     return this._success('Order created successfully', createdOrder.data);
   }
 

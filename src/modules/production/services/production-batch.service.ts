@@ -19,15 +19,17 @@ import {
   ProductionStage,
   StageStatus,
 } from '../entities';
-import { 
-  CreateBatchDto, 
-  RecordStageDto, 
+import {
+  CreateBatchDto,
+  RecordStageDto,
   FilterBatchDto,
   CompleteBatchDto,
+  CheckMaterialStockDto,
 } from '../dto';
 import { ProductionFormulaService } from './production-formula.service';
 import { InventoryLegacyService } from '../../inventory/services/inventory-legacy.service';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
+import { NotificationEventEmitter } from '../../notifications/services/notification-event-emitter.service';
 
 @Injectable()
 export class ProductionBatchService extends BaseResponse {
@@ -49,6 +51,7 @@ export class ProductionBatchService extends BaseResponse {
     private readonly dataSource: DataSource,
     private readonly productionFormulaService: ProductionFormulaService,
     private readonly inventoryService: InventoryLegacyService,
+    private readonly notificationEventEmitter: NotificationEventEmitter,
   ) {
     super();
   }
@@ -57,7 +60,7 @@ export class ProductionBatchService extends BaseResponse {
    * Generate Batch Number
    * Format: BATCH-YYYYMMDD-XXX
    * Example: BATCH-20250111-001
-   * 
+   *
    * Uses MAX(sequence) to find the highest existing number for the date,
    * preventing duplicates even after batch deletion.
    */
@@ -84,7 +87,7 @@ export class ProductionBatchService extends BaseResponse {
     // Extract sequence numbers and find the maximum
     let maxSequence = 0;
     const prefix = `BATCH-${dateStr}-`;
-    
+
     for (const batch of todayBatches) {
       if (batch.batchNumber.startsWith(prefix)) {
         const sequenceStr = batch.batchNumber.substring(prefix.length);
@@ -98,6 +101,153 @@ export class ProductionBatchService extends BaseResponse {
     // Next sequence is max + 1
     const nextSequence = (maxSequence + 1).toString().padStart(3, '0');
     return `BATCH-${dateStr}-${nextSequence}`;
+  }
+
+  /**
+   * Check Material Stock Availability
+   * Human-Centered Design: Proactive validation with clear, actionable feedback
+   *
+   * Purpose:
+   * - Validate material availability before batch creation
+   * - Provide detailed shortage information
+   * - Block batch creation if materials insufficient
+   *
+   * Returns:
+   * - isValid: Can proceed with batch creation
+   * - shouldBlock: Should disable submit button
+   * - items: Detailed stock status per material
+   * - summary: Aggregated statistics
+   */
+  async checkMaterialStock(dto: CheckMaterialStockDto) {
+    try {
+      const productionDate = new Date(dto.productionDate);
+
+      // Fetch material details
+      const materialDetails = await Promise.all(
+        dto.materials.map(async (material) => {
+          // Fetch ProductCode with all relations, regardless of isDeleted/isActive status
+          const productCode = await this.productCodeRepository
+            .createQueryBuilder('pc')
+            .leftJoinAndSelect('pc.product', 'product')
+            .leftJoinAndSelect('product.category', 'productCategory')
+            .leftJoinAndSelect('pc.size', 'size')
+            .leftJoinAndSelect('pc.category', 'mainCategory')
+            .where('pc.id = :id', { id: material.materialProductCodeId })
+            .getOne();
+
+          // ProductCode tidak ditemukan sama sekali
+          if (!productCode) {
+            throw new NotFoundException(
+              `Material dengan ProductCode ID ${material.materialProductCodeId} tidak ditemukan. Formula mungkin menggunakan material yang telah dihapus dari database.`,
+            );
+          }
+
+          // ProductCode ditemukan tapi sudah dihapus atau dinonaktifkan
+          if (productCode.isDeleted || !productCode.isActive) {
+            const status = productCode.isDeleted ? 'dihapus' : 'dinonaktifkan';
+            throw new NotFoundException(
+              `Material "${productCode.productCode}" telah ${status}. Silakan update formula atau aktifkan kembali material ini untuk melanjutkan produksi.`,
+            );
+          }
+
+          // Get current stock from daily inventory
+          const today = new Date();
+          const businessDate = today.toISOString().split('T')[0];
+
+          const dailyInventory = await this.dataSource
+            .getRepository('DailyInventory')
+            .findOne({
+              where: {
+                productCodeId: material.materialProductCodeId,
+                businessDate: businessDate as any,
+              },
+            });
+
+          const availableStock = Number(dailyInventory?.stokAkhir || 0);
+          const reservedStock = 0; // Reserved stock not implemented yet
+          const actualAvailable = Math.max(0, availableStock - reservedStock);
+          const shortage = Math.max(
+            0,
+            material.plannedQuantity - actualAvailable,
+          );
+
+          // Determine stock status
+          let stockStatus = 'SUFFICIENT';
+          let isValid = true;
+
+          if (actualAvailable === 0) {
+            stockStatus = 'OUT_OF_STOCK';
+            isValid = false;
+          } else if (actualAvailable < material.plannedQuantity) {
+            stockStatus = 'INSUFFICIENT';
+            isValid = false;
+          }
+          // LOW_STOCK check disabled for now (minimum stock not in daily inventory)
+
+          const unit = productCode.size?.sizeValue || 'KG';
+
+          return {
+            materialProductCodeId: material.materialProductCodeId,
+            materialCode: productCode.productCode,
+            materialName: productCode.product.name,
+            category: productCode.product.category?.name || 'Unknown',
+            unit: unit,
+            requestedQuantity: material.plannedQuantity,
+            availableStock,
+            reservedStock,
+            actualAvailable,
+            minimumStock: 0, // Not implemented yet
+            stockStatus,
+            isValid,
+            shortage,
+            message: isValid
+              ? 'Stock tersedia'
+              : `Kurang ${shortage.toFixed(3)} ${unit}`,
+          };
+        }),
+      );
+
+      // Calculate summary
+      const summary = {
+        totalMaterials: materialDetails.length,
+        sufficientMaterials: materialDetails.filter(
+          (m) => m.stockStatus === 'SUFFICIENT',
+        ).length,
+        lowStockMaterials: materialDetails.filter(
+          (m) => m.stockStatus === 'LOW_STOCK',
+        ).length,
+        insufficientMaterials: materialDetails.filter(
+          (m) => m.stockStatus === 'INSUFFICIENT',
+        ).length,
+        outOfStockMaterials: materialDetails.filter(
+          (m) => m.stockStatus === 'OUT_OF_STOCK',
+        ).length,
+      };
+
+      const isValid = materialDetails.every((m) => m.isValid);
+      const shouldBlock = !isValid;
+
+      let message = 'Semua material tersedia';
+      if (shouldBlock) {
+        const insufficientCount =
+          summary.insufficientMaterials + summary.outOfStockMaterials;
+        message = `${insufficientCount} material tidak tersedia dalam jumlah yang cukup`;
+      } else if (summary.lowStockMaterials > 0) {
+        message = `${summary.lowStockMaterials} material mendekati minimum stock`;
+      }
+
+      return this._success('Stock validation completed', {
+        isValid,
+        shouldBlock,
+        productionDate: dto.productionDate,
+        items: materialDetails,
+        summary,
+        message,
+      });
+    } catch (error) {
+      this.logger.error('Error checking material stock:', error);
+      throw error;
+    }
   }
 
   /**
@@ -195,6 +345,20 @@ export class ProductionBatchService extends BaseResponse {
           )
           .join('; ');
 
+        // ✅ Emit MATERIAL_SHORTAGE notification (CRITICAL - blocks production)
+        await this.notificationEventEmitter.emitMaterialShortage({
+          batchId: 0, // Not created yet
+          batchNumber: 'N/A',
+          insufficientMaterials: stockAvailability.insufficientMaterials.map(
+            (m) => ({
+              materialName: m.productName,
+              required: m.required,
+              available: m.available,
+              shortage: m.shortage,
+            }),
+          ),
+        });
+
         throw new BadRequestException(
           `Stock material tidak mencukupi untuk batch ini. Detail: ${shortageDetails}`,
         );
@@ -247,7 +411,6 @@ export class ProductionBatchService extends BaseResponse {
           unit: material.unit,
           unitCost: material.standardUnitCost || 0,
           totalCost: 0,
-          notes: material.notes || undefined,
           createdBy: userId,
         }),
       );
@@ -317,6 +480,15 @@ export class ProductionBatchService extends BaseResponse {
       this.logger.log(
         `Batch created successfully: ${batchNumber} for formula ${formula.formulaCode} (${dto.targetLiters}L) by user ${userId}`,
       );
+
+      // ✅ Emit BATCH_CREATED notification
+      await this.notificationEventEmitter.emitBatchCreated({
+        batchId: savedBatch.id,
+        batchNumber: savedBatch.batchNumber,
+        productName:
+          completeBatch?.productCode?.product?.name || 'Unknown Product',
+        targetLiters: dto.targetLiters,
+      });
 
       return this._success(
         'Production batch created successfully',
@@ -558,6 +730,14 @@ export class ProductionBatchService extends BaseResponse {
 
         // Update batch status to QC_PENDING
         batch.status = BatchStatus.QC_PENDING;
+
+        // ✅ Emit QC_PENDING notification (batch ready for quality control)
+        await this.notificationEventEmitter.emitQCPending({
+          batchId: batch.id,
+          batchNumber: batch.batchNumber,
+          productName: batch.productCode?.product?.name || 'Unknown Product',
+          plannedQuantity: dto.outputQuantity,
+        });
       }
 
       if (dto.stage === ProductionStage.QC) {
@@ -619,6 +799,27 @@ export class ProductionBatchService extends BaseResponse {
           this.logger.log(
             `Batch ${batch.batchNumber} rejected - no finished goods added to inventory`,
           );
+
+          // ✅ Emit QC_FAILED notification (CRITICAL - batch rejected)
+          await this.notificationEventEmitter.emitQCFailed({
+            batchId: batch.id,
+            batchNumber: batch.batchNumber,
+            productName: batch.productCode?.product?.name || 'Unknown Product',
+            qcNotes: batch.qcNotes || 'No notes provided',
+          });
+        }
+
+        // ✅ Emit QC_PASSED notification for successful QC (PASS or PARTIAL)
+        if (
+          batch.qcStatus === QCStatus.PASS ||
+          batch.qcStatus === QCStatus.PARTIAL
+        ) {
+          await this.notificationEventEmitter.emitQCPassed({
+            batchId: batch.id,
+            batchNumber: batch.batchNumber,
+            productName: batch.productCode?.product?.name || 'Unknown Product',
+            qcNotes: batch.qcNotes || 'QC Passed',
+          });
         }
 
         // Calculate yield and waste
@@ -827,6 +1028,13 @@ export class ProductionBatchService extends BaseResponse {
         `Batch ${batch.batchNumber} cancelled by user ${userId}. Reason: ${reason}`,
       );
 
+      // ✅ Emit BATCH_CANCELLED notification
+      await this.notificationEventEmitter.emitBatchCancelled({
+        batchId: batch.id,
+        batchNumber: batch.batchNumber,
+        cancellationReason: reason,
+      });
+
       return this._success('Batch cancelled successfully', batch);
     } catch (error) {
       this.logger.error(`Failed to cancel batch ${batchId}`, error.stack);
@@ -987,11 +1195,7 @@ export class ProductionBatchService extends BaseResponse {
    * - Creates 2 PRODUCTION_IN transactions (one per size)
    * - Creates PRODUCTION_OUT for materials consumed
    */
-  async completeBatch(
-    batchId: number,
-    dto: CompleteBatchDto,
-    userId: number,
-  ) {
+  async completeBatch(batchId: number, dto: CompleteBatchDto, userId: number) {
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
@@ -1008,7 +1212,10 @@ export class ProductionBatchService extends BaseResponse {
       }
 
       // 2. Validate batch status
-      if (batch.status !== BatchStatus.PLANNED && batch.status !== BatchStatus.DRAFT) {
+      if (
+        batch.status !== BatchStatus.PLANNED &&
+        batch.status !== BatchStatus.DRAFT
+      ) {
         throw new BadRequestException(
           `Cannot complete batch in ${batch.status} status. Only PLANNED or DRAFT batches can be completed.`,
         );
@@ -1100,10 +1307,21 @@ export class ProductionBatchService extends BaseResponse {
 
       this.logger.log(
         `Batch ${batch.batchNumber} ${dto.isDraft ? 'saved as draft' : 'completed'}: ` +
-        `${bottlingOutputs.length} bottling outputs, ` +
-        `${materialUsages.length} materials, ` +
-        `${inventoryTransactions.length} inventory transactions`,
+          `${bottlingOutputs.length} bottling outputs, ` +
+          `${materialUsages.length} materials, ` +
+          `${inventoryTransactions.length} inventory transactions`,
       );
+
+      // ✅ Emit BATCH_COMPLETED notification (only if NOT draft)
+      if (!dto.isDraft) {
+        await this.notificationEventEmitter.emitBatchCompleted({
+          batchId: batch.id,
+          batchNumber: batch.batchNumber,
+          productName: batch.product?.name || 'Unknown Product',
+          actualQuantity: totalGoodQuantity,
+          qcPassedQuantity: totalGoodQuantity, // In new system, all output is QC passed
+        });
+      }
 
       return this._success(
         dto.isDraft
@@ -1126,10 +1344,7 @@ export class ProductionBatchService extends BaseResponse {
         await queryRunner.rollbackTransaction();
       }
       await queryRunner.release();
-      this.logger.error(
-        `Failed to complete batch ${batchId}`,
-        error.stack,
-      );
+      this.logger.error(`Failed to complete batch ${batchId}`, error.stack);
       throw error;
     }
   }
@@ -1170,8 +1385,8 @@ export class ProductionBatchService extends BaseResponse {
       if (productCode.product.id !== batchProduct.id) {
         throw new BadRequestException(
           `Product code ${productCode.productCode} does not match batch product concept. ` +
-          `Expected: ${batchProduct.productName}, ` +
-          `Got: ${productCode.product.productName}`,
+            `Expected: ${batchProduct.productName}, ` +
+            `Got: ${productCode.product.productName}`,
         );
       }
     }
@@ -1278,18 +1493,18 @@ export class ProductionBatchService extends BaseResponse {
     const transactions = [];
 
     for (const output of outputs) {
-      const transaction = await this.inventoryService.recordFinishedGoodsProduction(
-        output.productCodeId,
-        output.quantity, // Only good quantity (not waste)
-        batch.batchNumber,
-        userId,
-        batch.performedBy || undefined,
-        `Production from batch ${batch.batchNumber}${output.notes ? ` - ${output.notes}` : ''}`,
-      );
+      const transaction =
+        await this.inventoryService.recordFinishedGoodsProduction(
+          output.productCodeId,
+          output.quantity, // Only good quantity (not waste)
+          batch.batchNumber,
+          userId,
+          batch.performedBy || undefined,
+          `Production from batch ${batch.batchNumber}${output.notes ? ` - ${output.notes}` : ''}`,
+        );
       transactions.push(transaction);
     }
 
     return transactions;
   }
-
 }

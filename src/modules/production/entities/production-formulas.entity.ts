@@ -93,24 +93,6 @@ export class ProductionFormulas extends BaseEntity {
   @JoinColumn({ name: 'productCodeId' })
   productCode: ProductCodes | null;
 
-  // Production Metadata
-  @Column({
-    type: 'decimal',
-    precision: 10,
-    scale: 2,
-    nullable: true,
-    comment: 'Expected concentrate output in liters (e.g., 500L)',
-  })
-  concentrateOutput: number | null;
-
-  // Production Metadata
-  @Column({
-    type: 'int',
-    nullable: true,
-    comment: 'Estimated production time in minutes',
-  })
-  productionTimeMinutes: number | null;
-
   @Column({
     type: 'text',
     nullable: true,

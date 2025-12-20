@@ -155,8 +155,6 @@ export class ProductionFormulaService extends BaseResponse {
         version,
         productId: dto.productId, // PRIMARY: Product concept
         productCodeId: dto.productCodeId || null, // OPTIONAL: Specific product size
-        concentrateOutput: dto.concentrateOutput || null,
-        productionTimeMinutes: dto.productionTimeMinutes || null,
         instructions: dto.instructions || null,
         isActive: dto.isActive !== undefined ? dto.isActive : true,
         effectiveFrom: new Date(dto.effectiveFrom),
@@ -196,7 +194,6 @@ export class ProductionFormulaService extends BaseResponse {
             standardUnitCost: material.standardUnitCost || null,
             totalCost,
             sequence: material.sequence || index + 1,
-            notes: material.notes || null,
             isActive: true,
             createdBy: userId,
           };
@@ -404,10 +401,6 @@ export class ProductionFormulaService extends BaseResponse {
 
       // Update formula fields
       if (dto.formulaName) formula.formulaName = dto.formulaName;
-      if (dto.concentrateOutput !== undefined)
-        formula.concentrateOutput = dto.concentrateOutput;
-      if (dto.productionTimeMinutes !== undefined)
-        formula.productionTimeMinutes = dto.productionTimeMinutes;
       if (dto.instructions !== undefined)
         formula.instructions = dto.instructions;
       if (dto.isActive !== undefined) formula.isActive = dto.isActive;
@@ -454,7 +447,6 @@ export class ProductionFormulaService extends BaseResponse {
               standardUnitCost: material.standardUnitCost || null,
               totalCost,
               sequence: material.sequence || index + 1,
-              notes: material.notes || null,
               isActive: true,
               createdBy: userId,
             };
@@ -547,7 +539,6 @@ export class ProductionFormulaService extends BaseResponse {
       unit: string;
       plannedQuantity: number;
       sequence: number;
-      notes: string | null;
       standardUnitCost: number | null;
     }[]
   > {
@@ -586,7 +577,6 @@ export class ProductionFormulaService extends BaseResponse {
         unit: material.unit,
         plannedQuantity: material.calculatePlannedQuantity(targetLiters),
         sequence: material.sequence,
-        notes: material.notes,
         standardUnitCost: material.standardUnitCost
           ? Number(material.standardUnitCost)
           : null,

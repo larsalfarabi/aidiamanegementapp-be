@@ -36,7 +36,7 @@ export class CreateNotificationDto {
 
   @IsString()
   @IsOptional()
-  requiredPermission?: string;
+  requiredPermission: string | null = null;
 
   @IsString()
   eventType: string;
@@ -46,17 +46,17 @@ export class CreateNotificationDto {
 
   @IsNumber()
   @IsOptional()
-  resourceId?: number;
+  resourceId: number | null = null;
 
   @IsString()
   @IsOptional()
   @MaxLength(500)
-  actionUrl?: string;
+  actionUrl: string | null = null;
 
   @IsString()
   @IsOptional()
   @MaxLength(100)
-  actionLabel?: string;
+  actionLabel: string | null = null;
 
   @IsObject()
   @IsOptional()

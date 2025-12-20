@@ -37,6 +37,7 @@ import {
 } from '../dto/record-transaction.dto';
 import { FilterTransactionsDto } from '../dto/filter-transactions.dto';
 import { AdjustStockDto } from '../dto/adjust-stock.dto';
+import { NotificationEventEmitter } from '../../notifications/services/notification-event-emitter.service';
 
 /**
  * InventoryTransactionService
@@ -78,6 +79,7 @@ export class InventoryTransactionService extends BaseResponse {
     private readonly productCodesRepo: Repository<ProductCodes>,
 
     private readonly dataSource: DataSource,
+    private readonly notificationEventEmitter: NotificationEventEmitter,
   ) {
     super();
   }
@@ -201,6 +203,16 @@ export class InventoryTransactionService extends BaseResponse {
       this.logger.log(
         `Production recorded: Product ${dto.productCodeId}, Qty ${dto.quantity}, Batch ${dto.productionBatchNumber}`,
       );
+
+      // ✅ Emit PRODUCTION_IN notification (MEDIUM priority - informational)
+      await this.notificationEventEmitter.emitProductionIn({
+        transactionId: savedTransaction.id,
+        productCode: updatedInventory?.productCode?.productCode || 'Unknown',
+        productName:
+          updatedInventory?.productCode?.product?.name || 'Unknown Product',
+        quantity: dto.quantity,
+        batchNumber: dto.productionBatchNumber || 'N/A',
+      });
 
       return this._success('Production recorded successfully', {
         dailyInventory: updatedInventory,
@@ -530,6 +542,16 @@ export class InventoryTransactionService extends BaseResponse {
         this.logger.log(
           `Sale recorded: Product ${dto.productCodeId}, Qty ${dto.quantity}${dto.orderId ? `, Order ${dto.orderId}` : ''}, TRX: ${transactionNumber}`,
         );
+
+        // ✅ Emit SALE notification (MEDIUM priority - informational)
+        await this.notificationEventEmitter.emitSale({
+          transactionId: savedTransaction.id,
+          productCode: updatedInventory?.productCode?.productCode || 'Unknown',
+          productName:
+            updatedInventory?.productCode?.product?.name || 'Unknown Product',
+          quantity: dto.quantity,
+          orderNumber: dto.orderId ? dto.orderId.toString() : 'N/A',
+        });
 
         return this._success('Sale recorded successfully', {
           dailyInventory: updatedInventory,
@@ -2011,6 +2033,16 @@ export class InventoryTransactionService extends BaseResponse {
           `Before: ${stockBefore} | Adjustment: ${adjustmentQuantity > 0 ? '+' : ''}${adjustmentQuantity} | ` +
           `After: ${actualStockAfter} | Reason: ${reason}`,
       );
+
+      // ✅ Emit ADJUSTMENT notification (HIGH priority - significant stock change)
+      await this.notificationEventEmitter.emitAdjustment({
+        transactionId: transaction.id,
+        productCode: product.productCode,
+        productName: product.product.name,
+        oldQuantity: stockBefore,
+        newQuantity: actualStockAfter,
+        reason: reason,
+      });
 
       return this._success('Stock adjustment completed successfully', {
         transactionNumber,

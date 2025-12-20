@@ -25,6 +25,7 @@ import {
   FilterFormulaDto,
   FilterBatchDto,
   CompleteBatchDto,
+  CheckMaterialStockDto,
 } from './dto';
 
 @Controller('production')
@@ -110,6 +111,17 @@ export class ProductionController {
   }
 
   // ==================== BATCH ENDPOINTS ====================
+
+  /**
+   * POST /production/batches/check-material-stock
+   * Check material stock availability before batch creation
+   * Human-Centered Design: Clear feedback with actionable information
+   */
+  @RequirePermissions(`${Resource.BATCH}:${Action.CREATE}`)
+  @Post('batches/check-material-stock')
+  async checkMaterialStock(@Body() dto: CheckMaterialStockDto) {
+    return this.batchService.checkMaterialStock(dto);
+  }
 
   /**
    * POST /production/batches

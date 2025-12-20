@@ -9,6 +9,7 @@ import { InventoryTransactionService } from './services/inventory-transaction.se
 import { TransactionReportService } from './services/transaction-report.service';
 import { ExcelExportService } from './services/excel-export.service';
 import { StockOpnameService } from './services/stock-opname.service';
+import { InventoryCheckService } from './services/inventory-check.service';
 // Active entities (Daily Inventory System)
 import { DailyInventory } from './entity/daily-inventory.entity';
 import { DailyInventorySnapshots } from './entity/daily-inventory-snapshots.entity';
@@ -23,6 +24,7 @@ import { OrderItems } from '../orders/entity/order_items.entity';
 import { PermissionGuard } from '../auth/guards/permission.guard';
 import { Users } from '../users/entities/users.entity';
 import { RedisModule } from '../redis/redis.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -41,6 +43,7 @@ import { RedisModule } from '../redis/redis.module';
       Users,
     ]),
     RedisModule,
+    NotificationsModule, // Import NotificationsModule for notification events
   ],
   controllers: [InventoryController],
   providers: [
@@ -51,6 +54,7 @@ import { RedisModule } from '../redis/redis.module';
     TransactionReportService, // Transaction reports (Laporan Transaksi Barang)
     ExcelExportService, // Excel export for reports
     StockOpnameService, // Stock Opname Workflow B (Improved)
+    InventoryCheckService, // Scheduled job for stock alerts (STOCK_LOW/OUT @8AM)
     PermissionGuard,
   ],
   exports: [

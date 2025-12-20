@@ -18,6 +18,7 @@ import { InventoryModule } from '../inventory/inventory.module';
 import { PermissionGuard } from '../auth/guards/permission.guard';
 import { Users } from '../users/entities/users.entity';
 import { RedisModule } from '../redis/redis.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { RedisModule } from '../redis/redis.module';
     ]),
     InventoryModule,
     RedisModule, // Import InventoryModule to use InventoryService
+    NotificationsModule, // Import NotificationsModule for notification events
   ],
   controllers: [ProductionController],
   providers: [

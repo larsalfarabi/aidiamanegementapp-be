@@ -41,6 +41,9 @@ export enum NotificationResourceType {
   BATCH = 'batch',
   USER = 'user',
   SYSTEM = 'system',
+  REPORT = 'report',
+  ROLE = 'role',
+  SETTING = 'setting',
 }
 
 /**

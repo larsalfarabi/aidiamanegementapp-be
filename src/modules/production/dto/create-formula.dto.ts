@@ -40,10 +40,6 @@ export class FormulaMaterialItemDto {
   @IsNumber()
   @Type(() => Number)
   sequence?: number;
-
-  @IsOptional()
-  @IsString()
-  notes?: string;
 }
 
 /**
@@ -67,16 +63,6 @@ export class CreateFormulaDto {
   @IsNumber()
   @Type(() => Number)
   productCodeId?: number; // OPTIONAL: Specific product size (for backward compatibility)
-
-  @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  concentrateOutput?: number; // Expected concentrate in liters
-
-  @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  productionTimeMinutes?: number;
 
   @IsOptional()
   @IsString()

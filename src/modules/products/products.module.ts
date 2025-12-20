@@ -10,6 +10,7 @@ import { CategoryHierarchyService } from './services/category-hierarchy.service'
 import { Users } from '../users/entities/users.entity';
 import { RedisModule } from '../redis/redis.module';
 import { PermissionGuard } from '../auth/guards/permission.guard';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { PermissionGuard } from '../auth/guards/permission.guard';
       Users,
     ]),
     RedisModule,
+    NotificationsModule,
   ],
   controllers: [ProductsController],
   providers: [ProductsService, CategoryHierarchyService, PermissionGuard],
