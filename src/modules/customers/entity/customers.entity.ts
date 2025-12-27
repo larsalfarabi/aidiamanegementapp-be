@@ -3,7 +3,7 @@ import { Entity, Column, ManyToOne, JoinColumn, OneToMany } from 'typeorm';
 import { Users } from '../../users/entities/users.entity';
 import { CustomerProductCatalogs } from './customer_product_catalog.entity';
 
-@Entity({ synchronize: false })
+@Entity({ synchronize: true })
 export class Customers extends BaseEntity {
   @Column({ unique: true, length: 20 })
   customerCode: string;

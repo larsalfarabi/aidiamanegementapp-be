@@ -3,7 +3,7 @@ import { BaseEntity } from '../../../common/entities/base.entity';
 import { Roles } from '../../../modules/roles/entities/roles.entity';
 import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
 
-@Entity({ synchronize: false })
+@Entity({ synchronize: true })
 export class Users extends BaseEntity {
   @Column({ length: 100 })
   firstName: string;

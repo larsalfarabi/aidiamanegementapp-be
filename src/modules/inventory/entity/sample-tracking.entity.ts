@@ -67,7 +67,7 @@ export enum SampleStatus {
  *    - Track return or disposal
  *    - Link to quality control report
  */
-@Entity({ name: 'sample_tracking', synchronize: false })
+@Entity({ name: 'sample_tracking', synchronize: true })
 @Index(['businessDate']) // For daily queries
 @Index(['productCodeId']) // For product tracking
 @Index(['status']) // For status filtering

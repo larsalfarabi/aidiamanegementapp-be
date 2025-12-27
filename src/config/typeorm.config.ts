@@ -26,7 +26,7 @@ const AppDataSource = new DataSource({
   migrationsTableName: 'migrations',
 
   // Disable synchronize in production
-  synchronize: false,
+  synchronize: true,
 
   // Enable logging for debugging
   logging: true,

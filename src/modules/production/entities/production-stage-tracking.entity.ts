@@ -50,7 +50,7 @@ export enum StageStatus {
  * - Pass: 1850 Bottles
  * - Fail: 50 Bottles (kualitas tidak sesuai)
  */
-@Entity({ name: 'production_stage_tracking', synchronize: false })
+@Entity({ name: 'production_stage_tracking', synchronize: true })
 @Index(['batchId'])
 @Index(['stage'])
 @Index(['status'])

@@ -29,7 +29,7 @@ import { Users } from '../../users/entities/users.entity';
  * 4. Save session (progress)
  * 5. Export Excel final dengan SO FISIK dan Selisih
  */
-@Entity({ name: 'stock_opname_records', synchronize: false })
+@Entity({ name: 'stock_opname_records', synchronize: true })
 @Index(['sessionDate', 'productCodeId'], { unique: true }) // One SO per product per session date
 @Index(['sessionDate', 'createdBy']) // Query by session and user
 @Index(['productCodeId']) // Query by product

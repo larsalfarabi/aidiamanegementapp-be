@@ -45,7 +45,7 @@ import { ProductionBatches } from './production-batches.entity';
  *   → 5 bottles × 250ML (MANGO-PREMIUM-250ML)
  *   → 10 bottles × 5L (MANGO-PREMIUM-5L)
  */
-@Entity({ name: 'production_formulas', synchronize: false })
+@Entity({ name: 'production_formulas', synchronize: true })
 @Index(['productId', 'version'], { unique: true }) // One version per product concept
 @Index(['isActive']) // Quick lookup for active formulas
 @Index(['formulaCode']) // Quick lookup by code

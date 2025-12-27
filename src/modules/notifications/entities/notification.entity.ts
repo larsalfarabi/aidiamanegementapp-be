@@ -59,7 +59,7 @@ export enum NotificationResourceType {
  * - Deep linking via actionUrl
  * - Auto-archiving via expiresAt
  */
-@Entity({ name: 'notifications', synchronize: false })
+@Entity({ name: 'notifications', synchronize: true })
 @Index('idx_notifications_category_priority', ['category', 'priority'])
 @Index('idx_notifications_resource', ['resourceType', 'resourceId'])
 @Index('idx_notifications_event_type', ['eventType'])

@@ -8,7 +8,7 @@ export enum CategoryType {
   DETAIL = 'DETAIL',
 }
 
-@Entity({ synchronize: false })
+@Entity({ synchronize: true })
 export class ProductCategories extends BaseEntity {
   @Column({ unique: true, length: 100 })
   name: string;

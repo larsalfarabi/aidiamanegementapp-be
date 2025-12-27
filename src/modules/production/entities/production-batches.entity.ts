@@ -74,7 +74,7 @@ export enum QCStatus {
  * 1. PLANNED → Create batch with productCodeId
  * 2-5. Same as old system
  */
-@Entity({ name: 'production_batches', synchronize: false })
+@Entity({ name: 'production_batches', synchronize: true })
 @Index(['batchNumber'], { unique: true })
 @Index(['productionDate'])
 @Index(['status'])
