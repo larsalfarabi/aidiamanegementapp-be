@@ -1,3 +1,5 @@
+import * as dotenv from 'dotenv';
+dotenv.config();
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
@@ -9,19 +11,8 @@ import { UserSeeder } from './user.seed';
 import { RoleSeeder } from './role.seed';
 import { PermissionSeeder } from './permission.seed';
 import { ProductSeeder } from './product.seed';
-import { CustomerSeeder } from './customer.seed';
-import { OrderSeeder } from './order.seed';
-import { InventorySeeder } from './inventory.seed';
-import { Products } from '../../modules/products/entity/products.entity';
 import { ProductCategories } from '../../modules/products/entity/product_categories.entity';
 import { ProductSizes } from '../../modules/products/entity/product_sizes.entity';
-import { ProductCodes } from '../../modules/products/entity/product_codes.entity';
-import { Customers } from '../../modules/customers/entity/customers.entity';
-import { CustomerProductCatalogs } from '../../modules/customers/entity/customer_product_catalog.entity';
-import { Orders } from '../../modules/orders/entity/orders.entity';
-import { OrderItems } from '../../modules/orders/entity/order_items.entity';
-import { Inventory } from '../../modules/inventory/entity/inventory.entity';
-import { InventoryTransactions } from '../../modules/inventory/entity/inventory_transactions.entity';
 
 @Module({
   imports: [
@@ -33,21 +24,7 @@ import { InventoryTransactions } from '../../modules/inventory/entity/inventory_
       username: process.env.DB_USERNAME || 'root',
       password: process.env.DB_PASSWORD || '',
       database: process.env.DB_DATABASE,
-      entities: [
-        Users,
-        Roles,
-        Permissions,
-        Products,
-        ProductCategories,
-        ProductSizes,
-        ProductCodes,
-        Customers,
-        CustomerProductCatalogs,
-        Orders,
-        OrderItems,
-        Inventory,
-        InventoryTransactions,
-      ],
+      entities: [Users, Roles, Permissions, ProductCategories, ProductSizes],
       synchronize: false, // Don't auto-create tables since they exist
       logging: false, // Reduce noise during seeding
     }),
@@ -55,16 +32,8 @@ import { InventoryTransactions } from '../../modules/inventory/entity/inventory_
       Users,
       Permissions,
       Roles,
-      Products,
       ProductCategories,
       ProductSizes,
-      ProductCodes,
-      Customers,
-      CustomerProductCatalogs,
-      Orders,
-      OrderItems,
-      Inventory,
-      InventoryTransactions,
     ]),
   ],
   providers: [
@@ -73,9 +42,6 @@ import { InventoryTransactions } from '../../modules/inventory/entity/inventory_
     RoleSeeder,
     PermissionSeeder,
     ProductSeeder,
-    CustomerSeeder,
-    OrderSeeder,
-    InventorySeeder,
   ],
 })
 export class SeederModule {}

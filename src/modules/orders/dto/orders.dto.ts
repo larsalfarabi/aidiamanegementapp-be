@@ -27,9 +27,8 @@ export class OrderDto {
   @IsDate()
   invoiceDate?: Date;
 
-  @IsOptional()
   @IsString()
-  customerNotes?: string;
+  customerNotes: string;
 
   @IsArray()
   @ValidateNested({ each: true })
@@ -104,7 +103,11 @@ export class UpdateOrderDto extends PickType(OrderDto, [
 export class DeleteOrderDto extends PickType(OrderDto, [
   'isDeleted',
   'deletedBy',
-]) {}
+]) {
+  @IsOptional()
+  @IsString()
+  deleteReason?: string;
+}
 
 export class OrderFilterDto {
   @IsOptional()

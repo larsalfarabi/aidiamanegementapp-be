@@ -14,34 +14,50 @@ import {
   Req,
 } from '@nestjs/common';
 import { Request } from 'express';
-import { InventoryService } from './inventory.service';
 import { DailyInventoryService } from './services/daily-inventory.service';
 import { DailyInventoryResetService } from './services/daily-inventory-reset.service';
 import { InventoryTransactionService } from './services/inventory-transaction.service';
+import { TransactionReportService } from './services/transaction-report.service';
+import { ExcelExportService } from './services/excel-export.service';
+import { StockOpnameService } from './services/stock-opname.service';
 import { JwtGuard } from '../auth/guards/auth.guard';
+import { PermissionGuard } from '../auth/guards/permission.guard';
+import { RequirePermissions } from '../../common/decorator/permission.decorator';
+import { Resource, Action } from '../../common/enums/resource.enum';
 import {
   CreateInventoryDto,
   UpdateInventoryDto,
   FilterInventoryDto,
   FilterTransactionsDto,
   RecordProductionDto,
+  CreatePurchaseDto,
   RecordWasteDto,
   AdjustStockDto,
   FilterDailyInventoryDto,
+  CheckStockDto,
 } from './dto';
+import {
+  TransactionReportFiltersDto,
+  QuickAdjustmentDto,
+  ExcelExportOptionsDto,
+  BatchStockOpnameSaveDto,
+  StockOpnameFiltersDto,
+} from './dto/transaction-report.dto';
 
 interface AuthRequest extends Request {
-  user: { id: number };
+  user: { id: number; name?: string };
 }
 
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, PermissionGuard)
 @Controller('inventory')
 export class InventoryController {
   constructor(
-    private readonly inventoryService: InventoryService,
     private readonly dailyInventoryService: DailyInventoryService,
     private readonly dailyResetService: DailyInventoryResetService,
     private readonly transactionService: InventoryTransactionService,
+    private readonly reportService: TransactionReportService,
+    private readonly excelExportService: ExcelExportService,
+    private readonly stockOpnameService: StockOpnameService,
   ) {}
 
   // ==================== DAILY INVENTORY CRUD ====================
@@ -58,6 +74,7 @@ export class InventoryController {
    * - barangOutSample (Out as Samples)
    * - stokAkhir (Ending Stock - GENERATED COLUMN)
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
   @Get('daily')
   async getDailyInventory(@Query() query: FilterDailyInventoryDto) {
     return this.dailyInventoryService.findAll(query);
@@ -67,6 +84,7 @@ export class InventoryController {
    * GET /inventory/daily/low-stock - Get products with low stock
    * Query params: businessDate (optional, default: today)
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
   @Get('daily/low-stock')
   async getLowStockProductsDaily(@Query('businessDate') businessDate?: string) {
     return this.dailyInventoryService.getLowStockProducts(businessDate);
@@ -94,6 +112,7 @@ export class InventoryController {
    * Biasanya tidak diperlukan karena cron job otomatis membuat record baru.
    * Digunakan untuk setup awal atau recovery.
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.CREATE}`)
   @Post('daily')
   @HttpCode(HttpStatus.CREATED)
   async createDailyInventory(@Body() dto: any, @Req() req: AuthRequest) {
@@ -104,6 +123,7 @@ export class InventoryController {
    * PATCH /inventory/daily/:id - Update inventory settings
    * Hanya bisa update: minimumStock, maximumStock, notes, isActive
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.UPDATE}`)
   @Patch('daily/:id')
   async updateDailyInventory(
     @Param('id', ParseIntPipe) id: number,
@@ -116,9 +136,37 @@ export class InventoryController {
   /**
    * DELETE /inventory/daily/:id - Soft delete inventory record
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.DELETE}`)
   @Delete('daily/:id')
   async deleteDailyInventory(@Param('id', ParseIntPipe) id: number) {
     return this.dailyInventoryService.softDelete(id);
+  }
+
+  /**
+   * POST /inventory/daily/bulk-register - Bulk register products to inventory
+   *
+   * Human-Centered Design: One-click setup for testing or deployment
+   *
+   * Body params:
+   * - mainCategory?: string (optional - if null, register ALL products)
+   * - initialStock?: number (default: 100)
+   * - minimumStock?: number (default: 10)
+   */
+  @Post('daily/bulk-register')
+  @HttpCode(HttpStatus.CREATED)
+  async bulkRegisterProducts(
+    @Body('mainCategory') mainCategory: string | null,
+    @Body('initialStock') initialStock: number = 100,
+    @Body('minimumStock') minimumStock: number = 10,
+    @Req() req: AuthRequest,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.dailyInventoryService.bulkRegisterProducts(
+      mainCategory,
+      initialStock,
+      minimumStock,
+      userId,
+    );
   }
 
   /**
@@ -154,6 +202,7 @@ export class InventoryController {
    * Record production output (finished goods masuk gudang)
    * Updates: daily_inventory.barangMasuk++
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.CREATE}`)
   @Post('transactions/production')
   @HttpCode(HttpStatus.CREATED)
   async recordProductionTransaction(
@@ -161,6 +210,21 @@ export class InventoryController {
     @Req() req: AuthRequest,
   ) {
     return this.transactionService.recordProduction(dto, req.user.id);
+  }
+
+  /**
+   * POST /inventory/transactions/purchase
+   * Record material purchase (Bahan Baku, Pembantu, Kemasan)
+   * Updates: daily_inventory.barangMasuk++
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.CREATE}`)
+  @Post('transactions/purchase')
+  @HttpCode(HttpStatus.CREATED)
+  async recordPurchaseTransaction(
+    @Body() dto: CreatePurchaseDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.transactionService.recordPurchase(dto, req.user.id);
   }
 
   /**
@@ -182,6 +246,7 @@ export class InventoryController {
    * Record repacking operation (e.g., 1L → 4x 250ML)
    * Updates: source.barangOutRepack++, target.barangMasuk++
    */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.REPACK}`)
   @Post('transactions/repacking')
   @HttpCode(HttpStatus.CREATED)
   async recordRepackingTransaction(
@@ -238,6 +303,46 @@ export class InventoryController {
       req.user.id,
       dto.reason,
     );
+  }
+
+  /**
+   * POST /inventory/transactions/adjustment
+   * Manual stock adjustment - Directly modifies stokAkhir
+   *
+   * Use cases:
+   * - Stock opname corrections (hasil stock opname tidak sesuai sistem)
+   * - Damaged/expired goods removal (barang rusak/kadaluarsa)
+   * - Missing stock correction (selisih fisik vs sistem)
+   * - Data entry error fixes
+   *
+   * Impact: stokAkhir baru = stokAkhir lama + adjustmentQuantity
+   * - Positive (+): Increase stock (tambah stok)
+   * - Negative (-): Decrease stock (kurangi stok)
+   *
+   * Body: { productCodeId, adjustmentQuantity, reason, notes?, performedBy? }
+   *
+   * Returns: { transactionNumber, productCode, stockBefore, adjustmentQuantity, stockAfter }
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.UPDATE}`)
+  @Post('transactions/adjustment')
+  @HttpCode(HttpStatus.CREATED)
+  async adjustStockTransaction(
+    @Body() dto: AdjustStockDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.transactionService.adjustStock(dto, req.user.id);
+  }
+
+  /**
+   * GET /inventory/transactions/history - Get transaction history
+   * Query params: productCodeId, transactionType, startDate, endDate, orderId, productionBatchNumber, page, limit
+   *
+   * Returns paginated transaction history with filtering support
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('transactions/history')
+  async getTransactionHistory(@Query() query: FilterTransactionsDto) {
+    return this.transactionService.getTransactionHistory(query);
   }
 
   // ==================== REPACKING QUERY ENDPOINTS ====================
@@ -319,102 +424,22 @@ export class InventoryController {
     return this.transactionService.getSampleById(id);
   }
 
-  // ==================== OLD INVENTORY CRUD (Legacy) ====================
-
-  /**
-   * GET /inventory - Get all inventory with filters
-   * Query params: productCodeId, lowStock, isActive, page, limit
-   */
-  @Get()
-  async findAll(@Query() query: FilterInventoryDto) {
-    return this.inventoryService.findAll(query);
-  }
-
-  /**
-   * GET /inventory/low-stock - Get products with low stock
-   */
-  @Get('low-stock')
-  async getLowStockProducts() {
-    return this.inventoryService.getLowStockProducts();
-  }
-
-  /**
-   * GET /inventory/balance - Get stock balance summary
-   */
-  @Get('balance')
-  async getStockBalance() {
-    return this.inventoryService.getStockBalance();
-  }
-
-  /**
-   * GET /inventory/:id - Get inventory by ID
-   */
-  @Get(':id')
-  async findById(@Param('id', ParseIntPipe) id: number) {
-    return this.inventoryService.findById(id);
-  }
-
-  /**
-   * POST /inventory - Create new inventory record
-   */
-  @Post()
-  @HttpCode(HttpStatus.CREATED)
-  async create(@Body() dto: CreateInventoryDto, @Req() req: AuthRequest) {
-    return this.inventoryService.create(dto, req.user.id);
-  }
-
-  /**
-   * PATCH /inventory/:id - Update inventory settings
-   */
-  @Patch(':id')
-  async update(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: UpdateInventoryDto,
-    @Req() req: AuthRequest,
-  ) {
-    return this.inventoryService.update(id, dto, req.user.id);
-  }
-
-  // ==================== TRANSACTION OPERATIONS ====================
-
-  /**
-   * POST /inventory/production - Record production receipt
-   */
-  @Post('production')
-  @HttpCode(HttpStatus.CREATED)
-  async recordProduction(
-    @Body() dto: RecordProductionDto,
-    @Req() req: AuthRequest,
-  ) {
-    return this.inventoryService.recordProduction(dto, req.user.id);
-  }
-
-  /**
-   * POST /inventory/waste - Record waste/damaged products
-   */
-  @Post('waste')
-  @HttpCode(HttpStatus.CREATED)
-  async recordWaste(@Body() dto: RecordWasteDto, @Req() req: AuthRequest) {
-    return this.inventoryService.recordWaste(dto, req.user.id);
-  }
-
-  /**
-   * POST /inventory/adjust - Stock adjustment (stock opname)
-   */
-  @Post('adjust')
-  @HttpCode(HttpStatus.CREATED)
-  async adjustStock(@Body() dto: AdjustStockDto, @Req() req: AuthRequest) {
-    return this.inventoryService.adjustStock(dto, req.user.id);
-  }
-
-  /**
-   * GET /inventory/transactions - Get transaction history
-   * Query params: productCodeId, transactionType, startDate, endDate, orderId, productionBatchNumber, page, limit
-   */
-  @Get('transactions/history')
-  async getTransactionHistory(@Query() query: FilterTransactionsDto) {
-    return this.inventoryService.getTransactionHistory(query);
-  }
+  // ==================== LEGACY ENDPOINTS REMOVED ====================
+  // Removed 10 unused endpoints:
+  // - GET /inventory (findAll)
+  // - GET /inventory/low-stock (getLowStockProducts)
+  // - GET /inventory/balance (getStockBalance)
+  // - GET /inventory/:id (findById)
+  // - POST /inventory (create)
+  // - PATCH /inventory/:id (update)
+  // - POST /inventory/production (recordProduction)
+  // - POST /inventory/waste (recordWaste)
+  // - POST /inventory/adjust (adjustStock)
+  // - GET /inventory/transactions/history (getTransactionHistory)
+  //
+  // These were NOT used by frontend. Use these instead:
+  // - Daily inventory operations: /inventory/daily/*
+  // - Transaction operations: /inventory/transactions/* (from InventoryTransactionService)
 
   // ==================== ADMIN OPERATIONS (Daily Reset) ====================
 
@@ -448,5 +473,305 @@ export class InventoryController {
   @Get('admin/reset-status')
   async getResetStatus() {
     return this.dailyResetService.getResetStatus();
+  }
+
+  /**
+   * GET /inventory/admin/check-dates - Check inventory dates in database
+   *
+   * Returns list of dates with inventory records for debugging
+   */
+  @Get('admin/check-dates')
+  async checkInventoryDates() {
+    return this.dailyResetService.checkInventoryDates();
+  }
+
+  // ==================== STOCK VALIDATION ====================
+
+  /**
+   * POST /inventory/check-stock - Check stock availability for order items
+   *
+   * This endpoint validates stock based on invoice date.
+   * - SAME_DAY orders: Blocks if insufficient stock
+   * - FUTURE_DATE orders: Shows warning but allows proceed
+   * - PAST_DATE orders: Historical validation only
+   *
+   * Request body:
+   * {
+   *   "invoiceDate": "2025-10-20",
+   *   "orderItems": [
+   *     { "productCodeId": 1, "quantity": 100 },
+   *     { "productCodeId": 2, "quantity": 50 }
+   *   ]
+   * }
+   *
+   * Response:
+   * {
+   *   "isValid": true/false,
+   *   "shouldBlock": true/false,
+   *   "validationType": "SAME_DAY" | "FUTURE_DATE" | "PAST_DATE",
+   *   "items": [...],
+   *   "summary": { totalItems, sufficientItems, insufficientItems, ... }
+   * }
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Post('check-stock')
+  @HttpCode(HttpStatus.OK)
+  async checkStock(@Body() checkStockDto: CheckStockDto) {
+    return this.dailyInventoryService.checkStock(
+      checkStockDto.invoiceDate,
+      checkStockDto.orderItems,
+    );
+  }
+
+  // ==================== TRANSACTION REPORTS ====================
+
+  /**
+   * GET /inventory/reports/finished-goods
+   * Get transaction report for Finished Goods (Barang Jadi)
+   *
+   * Query params:
+   * - startDate: YYYY-MM-DD (optional)
+   * - endDate: YYYY-MM-DD (optional)
+   * - productCodeId: number (optional)
+   * - page, pageSize: pagination
+   *
+   * Columns: Kode, Nama, STCK AW, In Prod, Out Sales, Out Repack, Sample, STCK AKHIR, SO FISIK, Selisih, Keterangan
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('reports/finished-goods')
+  async getFinishedGoodsReport(@Query() filters: TransactionReportFiltersDto) {
+    return this.reportService.getFinishedGoodsReport(filters);
+  }
+
+  /**
+   * GET /inventory/reports/materials
+   * Get transaction report for Materials (Bahan Baku, Pembantu, Kemasan)
+   *
+   * Query params:
+   * - startDate: YYYY-MM-DD (optional)
+   * - endDate: YYYY-MM-DD (optional)
+   * - mainCategory: string (optional - specific material type)
+   * - productCodeId: number (optional)
+   * - page, pageSize: pagination
+   *
+   * Columns: Kode, Nama, STCK AW, Purchase, Out Prod, STCK AKHIR, SO FISIK, Selisih, Keterangan
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('reports/materials')
+  async getMaterialsReport(@Query() filters: TransactionReportFiltersDto) {
+    return this.reportService.getMaterialsReport(filters);
+  }
+
+  /**
+   * POST /inventory/reports/quick-adjustment
+   * Quick adjustment from report view (inline stock correction)
+   *
+   * Allows users to adjust stock directly from report when they spot discrepancies
+   * This integrates with existing adjustment workflow
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.UPDATE}`)
+  @Post('reports/quick-adjustment')
+  @HttpCode(HttpStatus.CREATED)
+  async quickAdjustment(
+    @Body() dto: QuickAdjustmentDto,
+    @Req() req: AuthRequest,
+  ) {
+    // Reuse existing adjustment endpoint
+    const adjustmentDto: AdjustStockDto = {
+      productCodeId: dto.productCodeId,
+      businessDate: dto.businessDate,
+      adjustmentQuantity: dto.adjustmentQuantity,
+      reason: dto.reason,
+      notes: dto.notes,
+    };
+
+    return this.transactionService.adjustStock(adjustmentDto, req.user.id);
+  }
+
+  /**
+   * GET /inventory/reports/export/finished-goods
+   * Export Finished Goods report to Excel
+   *
+   * Query params:
+   * - startDate: YYYY-MM-DD (optional)
+   * - endDate: YYYY-MM-DD (optional)
+   *
+   * Returns Excel file with metadata header and professional formatting
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('reports/export/finished-goods')
+  async exportFinishedGoodsToExcel(
+    @Query() options: ExcelExportOptionsDto,
+    @Req() req: AuthRequest,
+  ) {
+    // Prepare metadata for Excel header
+    const metadata = {
+      userName: req.user?.name || 'User',
+      exportedAt: new Date().toLocaleString('id-ID', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    };
+
+    const buffer = await this.excelExportService.exportFinishedGoodsToExcel(
+      options,
+      metadata,
+    );
+
+    // Set response headers for file download
+    req.res!.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    req.res!.setHeader(
+      'Content-Disposition',
+      `attachment; filename="Laporan-Barang-Jadi-${new Date().toISOString().split('T')[0]}.xlsx"`,
+    );
+
+    return req.res!.send(buffer);
+  }
+
+  /**
+   * GET /inventory/reports/export/materials
+   * Export Materials report to Excel
+   *
+   * Query params:
+   * - startDate: YYYY-MM-DD (optional)
+   * - endDate: YYYY-MM-DD (optional)
+   * - mainCategory: string (optional)
+   *
+   * Returns Excel file with metadata header and professional formatting
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('reports/export/materials')
+  async exportMaterialsToExcel(
+    @Query() options: ExcelExportOptionsDto,
+    @Req() req: AuthRequest,
+  ) {
+    // Prepare metadata for Excel header
+    const metadata = {
+      userName: req.user?.name || 'User',
+      exportedAt: new Date().toLocaleString('id-ID', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    };
+
+    const buffer = await this.excelExportService.exportMaterialsToExcel(
+      options,
+      metadata,
+    );
+
+    // Set response headers for file download
+    req.res!.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    req.res!.setHeader(
+      'Content-Disposition',
+      `attachment; filename="Laporan-Material-${new Date().toISOString().split('T')[0]}.xlsx"`,
+    );
+
+    return req.res!.send(buffer);
+  }
+
+  // ==================== STOCK OPNAME (Improved Workflow B) ====================
+
+  /**
+   * POST /inventory/stock-opname/batch-save
+   * Batch save Stock Opname entries (SO FISIK input di system)
+   *
+   * Workflow B:
+   * - Input SO FISIK di system (editable table)
+   * - Batch save multiple products
+   * - Auto-calculate selisih
+   * - Session-based (save progress)
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.UPDATE}`)
+  @Post('stock-opname/batch-save')
+  @HttpCode(HttpStatus.CREATED)
+  async batchSaveStockOpname(
+    @Body() dto: BatchStockOpnameSaveDto,
+    @Req() req: AuthRequest,
+  ) {
+    return this.stockOpnameService.batchSave(dto, req.user.id);
+  }
+
+  /**
+   * GET /inventory/stock-opname/session
+   * Get Stock Opname session data for display/edit
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('stock-opname/session')
+  async getStockOpnameSession(@Query() filters: StockOpnameFiltersDto) {
+    return this.stockOpnameService.getSession(filters);
+  }
+
+  /**
+   * GET /inventory/stock-opname/sessions
+   * Get list of all Stock Opname sessions (history)
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('stock-opname/sessions')
+  async getStockOpnameSessions() {
+    return this.stockOpnameService.getSessions();
+  }
+
+  /**
+   * POST /inventory/stock-opname/finalize/:sessionDate
+   * Finalize Stock Opname session (mark as COMPLETED)
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.UPDATE}`)
+  @Post('stock-opname/finalize/:sessionDate')
+  @HttpCode(HttpStatus.OK)
+  async finalizeStockOpname(
+    @Param('sessionDate') sessionDate: string,
+    @Req() req: AuthRequest,
+  ) {
+    return this.stockOpnameService.finalizeSession(sessionDate, req.user.id);
+  }
+
+  /**
+   * DELETE /inventory/stock-opname/session/:sessionDate
+   * Delete Stock Opname session (clear draft data)
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.DELETE}`)
+  @Delete('stock-opname/session/:sessionDate')
+  async deleteStockOpnameSession(@Param('sessionDate') sessionDate: string) {
+    return this.stockOpnameService.deleteSession(sessionDate);
+  }
+
+  /**
+   * GET /inventory/stock-opname/export
+   * Export Final Excel with SO FISIK data included
+   *
+   * Called after Stock Opname finalized
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
+  @Get('stock-opname/export')
+  async exportStockOpnameToExcel(
+    @Query() options: ExcelExportOptionsDto,
+    @Req() req: any,
+  ) {
+    const buffer =
+      await this.excelExportService.exportStockOpnameWithData(options);
+
+    // Set response headers for file download
+    req.res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    req.res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="Stock-Opname-${options.startDate || 'Final'}.xlsx"`,
+    );
+
+    return req.res.send(buffer);
   }
 }

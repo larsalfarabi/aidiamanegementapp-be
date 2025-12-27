@@ -3,12 +3,15 @@ dotenv.config();
 import { CacheModuleOptions } from '@nestjs/cache-manager';
 import { redisStore } from 'cache-manager-redis-yet';
 
-export const redisConfig: CacheModuleOptions = {
-  store: redisStore,
-  host: process.env.REDIS_HOST,
-  port: parseInt(process.env.REDIS_PORT!),
-  password: process.env.REDIS_PASSWORD,
-  db: parseInt(process.env.REDIS_DB!),
-  ttl: parseInt(process.env.REDIS_TTL!), // Time to live in seconds (5 minutes default)
-  max: 1000, // Maximum number of items in cache
-};
+export const redisConfig = async (): Promise<CacheModuleOptions> => ({
+  store: await redisStore({
+    socket: {
+      host: process.env.REDIS_HOST || '127.0.0.1',
+      port: parseInt(process.env.REDIS_PORT || '6379'),
+    },
+    password: process.env.REDIS_PASSWORD || undefined,
+    database: parseInt(process.env.REDIS_DB || '0'),
+    keyPrefix: '', // PENTING: Set empty string untuk tidak ada prefix
+  }),
+  ttl: parseInt(process.env.CACHE_TTL || '300000'), // milliseconds
+});

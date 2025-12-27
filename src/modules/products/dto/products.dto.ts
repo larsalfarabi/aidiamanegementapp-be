@@ -16,12 +16,16 @@ import { PartialType } from '@nestjs/mapped-types';
 import { OmitType, PickType } from '@nestjs/swagger';
 import { ProductType } from '../entity/products.entity';
 import { IsEnum } from 'class-validator';
+import { PaginationDto } from '../../../common/dto/pagination.dto';
 
 // ================== PRODUCTS DTOs ==================
 export class ProductDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(200)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.toUpperCase() : value,
+  )
   name: string;
 
   @IsEnum(ProductType)
@@ -53,16 +57,28 @@ export class CreateProductDto extends OmitType(ProductDto, ['updatedBy']) {}
 
 export class UpdateProductDto extends PartialType(ProductDto) {}
 
+export class QueryProductDto extends PaginationDto {
+  @IsOptional()
+  @IsString()
+  subCategory?: string; // Filter by sub-category (Buffet, Premium, Freshly)
+}
+
 // DTO for checking/creating product item (find or create pattern)
 export class CheckOrCreateProductDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(200)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.toUpperCase() : value,
+  )
   name: string;
 
   @IsEnum(ProductType)
+  @IsOptional()
+  productType?: ProductType;
+
   @IsNotEmpty()
-  productType: ProductType;
+  category: number; // Sub Category ID (Buffet, Premium, Freshly)
 
   @IsOptional()
   createdBy?: { id: number };
@@ -95,21 +111,42 @@ export class UpdateProductCategoryDto extends PartialType(ProductCategoryDto) {}
 
 // ================== PRODUCT SIZES DTOs ==================
 
+export enum ProductSizeUnit {
+  ML = 'ML',
+  LITER = 'LITER',
+  KG = 'KG',
+  GRAM = 'GRAM',
+  PCS = 'PCS',
+  GLN = 'GLN', // Galon
+  BTL = 'BTL', // Botol
+  CUP = 'CUP',
+}
+
 export class ProductSizeDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(100)
   sizeValue: string;
 
-  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  unitOfMeasure?: string = 'ml';
+  @MaxLength(20)
+  unitOfMeasure: string;
 
+  @IsOptional()
   @IsNumber()
   @IsPositive()
   @Type(() => Number)
-  volumeMili: number;
+  baseValue?: number;
+
+  @IsEnum(ProductSizeUnit)
+  @IsNotEmpty()
+  baseUnit: ProductSizeUnit;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  categoryType?: string;
 
   @IsOptional()
   createdBy?: { id: number };
@@ -136,19 +173,19 @@ export class ProductCodeDto {
   @IsInt()
   @IsPositive()
   @Type(() => Number)
-  productId: number;
+  product: number;
 
   @IsNumber()
   @IsInt()
   @IsPositive()
   @Type(() => Number)
-  categoryId: number;
+  category: number;
 
   @IsNumber()
   @IsInt()
   @IsPositive()
   @Type(() => Number)
-  sizeId: number;
+  size: number;
 
   @IsOptional()
   @IsBoolean()
@@ -189,7 +226,7 @@ export class DeleteProductCodeDto extends PickType(ProductCodeDto, [
 
 // ================== QUERY DTOs ==================
 
-export class ProductQueryDto {
+export class ProductQueryDto extends PaginationDto {
   @IsOptional()
   @IsString()
   search?: string;
@@ -202,55 +239,37 @@ export class ProductQueryDto {
     return value;
   })
   isActive?: boolean;
-
-  @IsOptional()
-  @IsNumber()
-  @IsInt()
-  @IsPositive()
-  @Type(() => Number)
-  page?: number = 1;
-
-  @IsOptional()
-  @IsNumber()
-  @IsInt()
-  @IsPositive()
-  @Type(() => Number)
-  limit?: number = 10;
 }
 
 export class ProductCodeQueryDto extends ProductQueryDto {
   @IsOptional()
-  @IsNumber()
-  @IsInt()
-  @IsPositive()
-  @Type(() => Number)
-  productId?: number;
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @IsString()
+  mainCategory?: string;
 
   @IsOptional()
   @IsNumber()
   @IsInt()
   @IsPositive()
   @Type(() => Number)
-  categoryId?: number;
+  subCategoryId?: number;
 
   @IsOptional()
   @IsNumber()
   @IsInt()
   @IsPositive()
   @Type(() => Number)
-  sizeId?: number;
+  size?: number;
+}
 
+// Query DTO for Product Sizes with category filter
+export class ProductSizeQueryDto extends PaginationDto {
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
-  minPrice?: number;
-
-  @IsOptional()
-  @IsNumber()
-  @IsPositive()
-  @Type(() => Number)
-  maxPrice?: number;
+  @IsString()
+  categoryType?: string; // Filter by categoryType (BARANG_JADI, BAHAN_BAKU, BAHAN_KEMASAN, BAHAN_PEMBANTU)
 }
 
 // ================== RESPONSE DTOs ==================
@@ -292,7 +311,9 @@ export class ProductSizeResponseDto {
   id: number;
   sizeValue: string;
   unitOfMeasure: string;
-  volumeMili: number;
+  baseValue?: number;
+  baseUnit: string;
+  categoryType?: string;
   createdAt: Date;
   updatedAt: Date;
   createdBy?: {
@@ -326,7 +347,9 @@ export class ProductCodeResponseDto {
     id: number;
     sizeValue: string;
     unitOfMeasure: string;
-    volumeMili: number;
+    baseValue?: number;
+    baseUnit: string;
+    categoryType?: string;
   };
   createdBy?: {
     id: number;

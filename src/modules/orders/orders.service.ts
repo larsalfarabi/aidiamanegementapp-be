@@ -5,7 +5,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between } from 'typeorm';
+import { Repository, Between, DataSource, In } from 'typeorm';
 import { Orders } from './entity/orders.entity';
 import { OrderItems } from './entity/order_items.entity';
 import { Customers } from '../customers/entity/customers.entity';
@@ -22,6 +22,7 @@ import { InvoiceNumberGenerator } from './utils/invoice-number-generator';
 import { DeleteOrderDto } from './dto/orders.dto';
 import { InventoryTransactionService } from '../inventory/services/inventory-transaction.service';
 
+
 @Injectable()
 export class OrdersService extends BaseResponse {
   private readonly logger = new Logger(OrdersService.name);
@@ -37,7 +38,9 @@ export class OrdersService extends BaseResponse {
     private readonly customerCatalogRepo: Repository<CustomerProductCatalogs>,
     @InjectRepository(ProductCodes)
     private readonly productCodesRepo: Repository<ProductCodes>,
-    private readonly inventoryTransactionService: InventoryTransactionService, // ✅ Inject inventory service
+    private readonly inventoryTransactionService: InventoryTransactionService,
+
+    private readonly dataSource: DataSource,
   ) {
     super();
   }
@@ -113,31 +116,55 @@ export class OrdersService extends BaseResponse {
     const calculatedItems = [];
     let subtotal = 0;
 
+    // 1. Collect IDs
+    const productCodeIds = orderItems.map((item) => item.productCodeId);
+
+    // 2. Batch Fetch ProductCodes
+    const productCodes = await this.productCodesRepo.find({
+      where: { id: In(productCodeIds), isActive: true },
+      relations: ['product', 'category', 'size'],
+      select: {
+        id: true,
+        productCode: true,
+        isActive: true,
+        product: {
+          id: true,
+          name: true,
+          productType: true,
+          imageUrl: true,
+        },
+        category: {
+          id: true,
+          name: true,
+        },
+        size: {
+          id: true,
+          sizeValue: true,
+          unitOfMeasure: true,
+          baseUnit: true,
+          baseValue: true,
+          categoryType: true,
+        },
+      },
+    });
+
+    const productCodeMap = new Map(productCodes.map((pc) => [pc.id, pc]));
+
+    // 3. Batch Fetch Customer Pricing
+    const customerCatalogs = await this.customerCatalogRepo.find({
+      where: {
+        customerId: customerId,
+        productCodeId: In(productCodeIds),
+        isActive: true,
+      },
+    });
+
+    const catalogMap = new Map(
+      customerCatalogs.map((cc) => [cc.productCodeId, cc]),
+    );
+
     for (const item of orderItems) {
-      // ✅ FIXED: Proper query with explicit SELECT to get all nested data
-      const productCodeData = await this.productCodesRepo
-        .createQueryBuilder('pc')
-        .select([
-          'pc.id',
-          'pc.productCode',
-          'pc.isActive',
-          'product.id',
-          'product.name',
-          'product.productType',
-          'product.imageUrl',
-          'category.id',
-          'category.name',
-          'size.id',
-          'size.sizeValue',
-          'size.unitOfMeasure',
-          'size.volumeMili',
-        ])
-        .leftJoin('pc.productId', 'product')
-        .leftJoin('pc.categoryId', 'category')
-        .leftJoin('pc.sizeId', 'size')
-        .where('pc.id = :id', { id: item.productCodeId })
-        .andWhere('pc.isActive = :isActive', { isActive: true })
-        .getOne();
+      const productCodeData = productCodeMap.get(item.productCodeId);
 
       if (!productCodeData) {
         throw new BadRequestException(
@@ -145,20 +172,8 @@ export class OrdersService extends BaseResponse {
         );
       }
 
-      // ✅ Get base unit price from product (assuming it's in Product entity)
-      // Default fallback if customer catalog not found
-      let unitPrice = 0; // Will be set from customer catalog or base price
-      let customerCatalogId = null;
-      const discountPercentage = 0;
-
-      // ✅ Try to find customer-specific pricing (MUST HAVE)
-      const customerCatalog = await this.customerCatalogRepo.findOne({
-        where: {
-          customerId: customerId,
-          productCodeId: item.productCodeId,
-          isActive: true,
-        },
-      });
+      // 4. Get pricing from Map
+      const customerCatalog = catalogMap.get(item.productCodeId);
 
       if (!customerCatalog) {
         throw new BadRequestException(
@@ -166,36 +181,32 @@ export class OrdersService extends BaseResponse {
         );
       }
 
-      // ✅ PRACTICAL APPROACH: Use pricing if catalog exists and isActive
-      // Date validation is optional and only for informational purposes
-      // This allows flexibility for backdated orders and historical data
-      unitPrice = customerCatalog.customerPrice;
-      customerCatalogId = customerCatalog.id;
-      // discountPercentage = customerCatalog.discountPercentage || 0;
+      // Pricing Logic
+      const unitPrice = customerCatalog.customerPrice;
+      const customerCatalogId = customerCatalog.id;
+      const discountPercentage = 0; // customerCatalog.discountPercentage || 0;
 
-      // Optional: Log warning if outside effective date range (but don't block)
+      // Date Validation (Logging only)
       if (customerCatalog.effectiveDate || customerCatalog.expiryDate) {
         const now = new Date();
         now.setHours(0, 0, 0, 0);
 
-        if (customerCatalog.effectiveDate) {
-          const effectiveDate = new Date(customerCatalog.effectiveDate);
-          effectiveDate.setHours(0, 0, 0, 0);
-          if (effectiveDate > now) {
-            console.warn(
-              `[PRICING WARNING] Product ${productCodeData.productCode} - Effective date is in future: ${effectiveDate.toISOString()}`,
-            );
-          }
+        if (
+          customerCatalog.effectiveDate &&
+          new Date(customerCatalog.effectiveDate) > now
+        ) {
+          console.warn(
+            `[PRICING WARNING] Product ${productCodeData.productCode} - Effective date in future`,
+          );
         }
 
-        if (customerCatalog.expiryDate) {
-          const expiryDate = new Date(customerCatalog.expiryDate);
-          expiryDate.setHours(23, 59, 59, 999);
-          if (expiryDate < now) {
-            console.warn(
-              `[PRICING WARNING] Product ${productCodeData.productCode} - Expiry date has passed: ${expiryDate.toISOString()}`,
-            );
-          }
+        if (
+          customerCatalog.expiryDate &&
+          new Date(customerCatalog.expiryDate) < now
+        ) {
+          console.warn(
+            `[PRICING WARNING] Product ${productCodeData.productCode} - Expiry date passed`,
+          );
         }
       }
 
@@ -205,48 +216,36 @@ export class OrdersService extends BaseResponse {
 
       subtotal += lineTotalAfterDiscount;
 
-      // ✅ FIXED: Extract relations properly from query result
-      const product = productCodeData.productId;
-      const category = productCodeData.categoryId;
-      const size = productCodeData.sizeId;
+      // Relations
+      const product = productCodeData.product;
+      const category = productCodeData.category;
+      const size = productCodeData.size;
 
-      // ✅ Build complete product name: Product + Category + ProductType + Size
-      // Format: "PRODUCT_NAME CATEGORY_NAME PRODUCT_TYPE @ SIZE_VALUE"
-      // Example: "Jus Mangga PREMIUM RTD @ 250 ML"
       let productName = 'Unknown Product';
 
       if (product && category && size) {
-        const productPart = product.name || '';
-        const categoryPart = category.name || '';
-        const productType = product.productType || '';
-        const sizePart = size.sizeValue.toUpperCase() || '';
-
-        // Concatenate product + category + productType
-        const baseName = [productPart, categoryPart, productType]
+        const baseName = [
+          product.name || '',
+          category.name || '',
+          product.productType || '',
+        ]
           .filter(Boolean)
           .join(' ');
 
-        // Add size with @ symbol
-        if (baseName && sizePart) {
-          productName = `${baseName} @ ${sizePart}`;
-        } else if (baseName) {
-          productName = baseName;
+        if (baseName && size.sizeValue) {
+          productName = `${baseName} @ ${size.sizeValue.toUpperCase()}`;
+        } else {
+          productName = baseName || 'Unknown Product';
         }
       } else if (product) {
-        // Fallback to just product name if relations incomplete
         productName = product.name || 'Unknown Product';
       }
-
-      // ✅ Log for debugging (can be removed in production)
-      console.log(
-        `[ORDER ITEM] Product Code: ${productCodeData.productCode}, Generated Name: ${productName}`,
-      );
 
       calculatedItems.push({
         productCodeId: item.productCodeId,
         customerCatalogId,
-        productCodeValue: productCodeData.productCode, // ✅ Correct string field
-        productName, // ✅ Use formatted product name
+        productCodeValue: productCodeData.productCode,
+        productName,
         unitPrice,
         quantity: item.quantity,
         unit: size?.unitOfMeasure || 'PCS',
@@ -257,7 +256,7 @@ export class OrdersService extends BaseResponse {
       });
     }
 
-    // Calculate tax based on customer tax type
+    // Calculate tax
     const taxPercentage = customer.taxType === 'PPN' ? 11 : 0;
     const taxAmount = (subtotal * taxPercentage) / 100;
     const grandTotal = subtotal + taxAmount;
@@ -275,127 +274,187 @@ export class OrdersService extends BaseResponse {
    * ✅ UPDATED: Support invoice date input & generate invoice number immediately
    */
   async createOrder(createOrderDto: CreateOrderDto): Promise<ResponseSuccess> {
-    // Validate customer
-    const customer = await this.customersRepo.findOne({
-      where: { id: createOrderDto.customerId, isActive: true },
-    });
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-    if (!customer) {
-      throw new NotFoundException('Customer not found or inactive');
-    }
-
-    // Validate order items
-    if (!createOrderDto.orderItems || createOrderDto.orderItems.length === 0) {
-      throw new BadRequestException('Order must have at least one item');
-    }
-
-    // ✅ Handle order date (default to today)
-    const orderDate = createOrderDto.orderDate
-      ? new Date(createOrderDto.orderDate)
-      : new Date();
-
-    // ✅ Handle invoice date (allow backdate and future dates, default to order date)
-    const invoiceDate = createOrderDto.invoiceDate
-      ? new Date(createOrderDto.invoiceDate)
-      : orderDate;
-
-    // Calculate pricing
-    const { items, subtotal, taxAmount, grandTotal } =
-      await this.calculateOrderPricing(
-        createOrderDto.customerId,
-        createOrderDto.orderItems,
-        customer,
-      );
-
-    // Generate order number
-    const orderNumber = await this.generateOrderNumber();
-
-    // ✅ Generate invoice number based on invoice date (not current date)
-    const invoiceNumber = await this.generateInvoiceNumber(invoiceDate);
-
-    // Create order
-    const order = new Orders();
-    order.orderNumber = orderNumber;
-    order.invoiceNumber = invoiceNumber; // ✅ Set invoice number at creation
-    order.customerId = createOrderDto.customerId;
-    order.customerCode = customer.customerCode;
-    order.customerName = customer.customerName;
-    order.customerAddress = customer.address;
-    order.orderDate = orderDate;
-    order.invoiceDate = invoiceDate; // ✅ Set invoice date (can be backdate)
-    order.subtotal = subtotal;
-    order.taxPercentage = customer.taxType === 'PPN' ? 11 : 0;
-    order.taxAmount = taxAmount;
-    order.grandTotal = grandTotal;
-    order.paidAmount = 0;
-    order.remainingAmount = grandTotal;
-    order.customerNotes = createOrderDto.customerNotes || (null as any);
-    order.internalNotes = createOrderDto.internalNotes || (null as any);
-    order.paymentInfo = 'BCA 167-251-4341 a.n PT. AIDIA MAKMUR INDONESIA';
-    order.createdBy = createOrderDto.createdBy as any;
-
-    const saveResult = await this.ordersRepo.save(order);
-    const savedOrder = Array.isArray(saveResult) ? saveResult[0] : saveResult;
-
-    // Create order items one by one
-    const createdOrderItems: OrderItems[] = [];
-    for (const item of items) {
-      const orderItem = this.orderItemsRepo.create({
-        orderId: savedOrder.id,
-        ...item,
+    try {
+      // Validate customer
+      const customer = await queryRunner.manager.findOne(Customers, {
+        where: { id: createOrderDto.customerId, isActive: true },
       });
-      const savedOrderItem = await this.orderItemsRepo.save(orderItem);
-      // Handle both single item and array return from save
-      const itemToAdd = Array.isArray(savedOrderItem)
-        ? savedOrderItem[0]
-        : savedOrderItem;
-      createdOrderItems.push(itemToAdd);
-    }
 
-    // ✅ Record inventory transactions for each order item
-    // This updates daily_inventory.dipesan and creates audit trail
-    const userId =
-      typeof createOrderDto.createdBy === 'object'
-        ? createOrderDto.createdBy.id
-        : createOrderDto.createdBy;
+      if (!customer) {
+        throw new NotFoundException('Customer not found or inactive');
+      }
 
-    if (!userId) {
-      throw new BadRequestException('createdBy user ID is required');
-    }
+      // Validate order items
+      if (
+        !createOrderDto.orderItems ||
+        createOrderDto.orderItems.length === 0
+      ) {
+        throw new BadRequestException('Order must have at least one item');
+      }
 
-    for (const orderItem of createdOrderItems) {
-      try {
-        await this.inventoryTransactionService.recordSale(
-          {
-            productCodeId: orderItem.productCodeId,
-            quantity: orderItem.quantity,
-            orderId: savedOrder.id,
-            customerName: customer.customerName,
-            notes: `Order ${savedOrder.orderNumber} - ${orderItem.productName}`,
-          },
-          userId,
+      // ✅ Handle order date (default to today)
+      const orderDate = createOrderDto.orderDate
+        ? new Date(createOrderDto.orderDate)
+        : new Date();
+
+      // ✅ Handle invoice date (allow backdate and future dates, default to order date)
+      const invoiceDate = createOrderDto.invoiceDate
+        ? new Date(createOrderDto.invoiceDate)
+        : orderDate;
+
+      // Calculate pricing
+      const { items, subtotal, taxAmount, grandTotal } =
+        await this.calculateOrderPricing(
+          createOrderDto.customerId,
+          createOrderDto.orderItems,
+          customer,
         );
-      } catch (error) {
-        // Log error but don't fail order creation
-        // The transaction will fail if insufficient stock
-        console.error(
-          `[ORDER ${savedOrder.orderNumber}] Failed to record inventory transaction for product ${orderItem.productCodeId}:`,
-          error.message,
+
+      // Generate order number
+      const orderNumber = await this.generateOrderNumber();
+
+      // ✅ Generate invoice number based on invoice date
+      const invoiceNumber = await this.generateInvoiceNumber(invoiceDate);
+
+      // Create order
+      const order = new Orders();
+      order.orderNumber = orderNumber;
+      order.invoiceNumber = invoiceNumber;
+      order.customerId = createOrderDto.customerId;
+      order.customerCode = customer.customerCode;
+      order.customerName = customer.customerName;
+      order.customerAddress = customer.address;
+      order.orderDate = orderDate;
+      order.invoiceDate = invoiceDate;
+      order.subtotal = subtotal;
+      order.taxPercentage = customer.taxType === 'PPN' ? 11 : 0;
+      order.taxAmount = taxAmount;
+      order.grandTotal = grandTotal;
+      order.paidAmount = 0;
+      order.remainingAmount = grandTotal;
+      order.customerNotes = createOrderDto.customerNotes || (null as any);
+      order.internalNotes = createOrderDto.internalNotes || (null as any);
+      order.paymentInfo = 'BCA 167-251-4341 a.n PT. AIDIA MAKMUR INDONESIA';
+      order.createdBy = createOrderDto.createdBy as any;
+
+      // ✅ Save using QueryRunner Manager
+      // Handle potential array return
+      const savedOrderResult = await queryRunner.manager.save(Orders, order);
+      const savedOrder = Array.isArray(savedOrderResult)
+        ? savedOrderResult[0]
+        : savedOrderResult;
+
+      // Create order items one by one
+      const createdOrderItems: OrderItems[] = [];
+      for (const item of items) {
+        const orderItem = this.orderItemsRepo.create({
+          orderId: savedOrder.id,
+          ...item,
+        });
+
+        // ✅ Save using QueryRunner Manager
+        const savedOrderItemResult = await queryRunner.manager.save(
+          OrderItems,
+          orderItem,
         );
-        // In production, you might want to:
-        // 1. Rollback the order creation
-        // 2. Send alert to admin
-        // 3. Mark order as "pending inventory confirmation"
-        throw new BadRequestException(
-          `Failed to reserve inventory for product ${orderItem.productName}: ${error.message}`,
+
+        // ✅ FIX: Explicitly handle array return type to satisfy TypeScript
+        const savedOrderItem = Array.isArray(savedOrderItemResult)
+          ? savedOrderItemResult[0]
+          : savedOrderItemResult;
+
+        createdOrderItems.push(savedOrderItem);
+      }
+
+      // ✅ Record inventory transactions for each order item
+      const userId =
+        typeof createOrderDto.createdBy === 'object'
+          ? createOrderDto.createdBy.id
+          : createOrderDto.createdBy;
+
+      if (!userId) {
+        throw new BadRequestException('User ID is required for creating order');
+      }
+
+      // ✅ Check if invoice date is today (same-day order)
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const invoiceDateOnly = new Date(invoiceDate);
+      invoiceDateOnly.setHours(0, 0, 0, 0);
+
+      const isSameDayOrder = invoiceDateOnly.getTime() === today.getTime();
+
+      if (isSameDayOrder) {
+        this.logger.log(
+          `[ORDER ${orderNumber}] Same-day order detected - recording inventory transactions`,
+        );
+
+        for (const item of items) {
+          try {
+            // ✅ CRITICAL FIX: Pass queryRunner.manager as the 3rd argument
+            await this.inventoryTransactionService.recordSale(
+              {
+                productCodeId: item.productCodeId,
+                quantity: item.quantity,
+                orderId: savedOrder.id,
+                invoiceDate: invoiceDate,
+                notes: createOrderDto.customerNotes,
+              },
+              userId,
+              queryRunner.manager, // <--- External Transaction Manager
+            );
+
+            this.logger.log(
+              `[ORDER ${orderNumber}] Inventory transaction recorded for product ${item.productCodeId}`,
+            );
+          } catch (error) {
+            this.logger.error(
+              `[ORDER ${orderNumber}] Failed to record inventory transaction for product ${item.productCodeId}: ${error.message}`,
+            );
+            throw new BadRequestException(
+              `Failed to reserve inventory for product ${item.productName}: ${error.message}`,
+            );
+          }
+        }
+      } else {
+        this.logger.log(
+          `[ORDER ${orderNumber}] Future-dated order (invoice: ${invoiceDate.toISOString().split('T')[0]}) - skipping inventory transaction`,
         );
       }
+
+      // ✅ Commit Transaction
+      await queryRunner.commitTransaction();
+
+      // --- Post-Transaction Logic ---
+      try {
+        const createdOrder = await this.findOne(savedOrder.id);
+
+        // [ROLLED BACK] Emit notification disabled
+
+        return this._success('Order created successfully', createdOrder.data);
+      } catch (notifError) {
+        this.logger.error(
+          `Notification failed for order ${orderNumber}`,
+          notifError,
+        );
+        return this._success(
+          'Order created successfully (Notification pending)',
+          savedOrder,
+        );
+      }
+    } catch (error) {
+      // ✅ Rollback Transaction on any error
+      await queryRunner.rollbackTransaction();
+      this.logger.error('Failed to create order', error);
+      throw error;
+    } finally {
+      // ✅ Release connection
+      await queryRunner.release();
     }
-
-    // Return created order with items
-    const createdOrder = await this.findOne(savedOrder.id);
-
-    return this._success('Order created successfully', createdOrder.data);
   }
 
   /**
@@ -412,9 +471,7 @@ export class OrdersService extends BaseResponse {
       .leftJoinAndSelect('order.customer', 'customer')
       .leftJoinAndSelect('order.orderItems', 'orderItems')
       .leftJoinAndSelect('orderItems.productCode', 'productCode')
-      .leftJoinAndSelect('productCode.productId', 'product')
-      .leftJoinAndSelect('productCode.categoryId', 'category') // ✅ Add category relation
-      .leftJoinAndSelect('productCode.sizeId', 'size') // ✅ Add size relation
+      .leftJoinAndSelect('productCode.product', 'product')
       .orderBy('order.createdAt', 'DESC')
       .where('order.isDeleted = :isDeleted OR order.isDeleted IS NULL', {
         isDeleted: false,
@@ -464,9 +521,9 @@ export class OrdersService extends BaseResponse {
         'customer',
         'orderItems',
         'orderItems.productCode',
-        'orderItems.productCode.productId',
-        'orderItems.productCode.categoryId', // ✅ Add category relation
-        'orderItems.productCode.sizeId', // ✅ Add size relation
+        'orderItems.productCode.product',
+        'orderItems.productCode.category', // ✅ Add category relation
+        'orderItems.productCode.size', // ✅ Add size relation
         'orderItems.customerCatalog',
         'createdBy',
         'updatedBy',
@@ -532,6 +589,35 @@ export class OrdersService extends BaseResponse {
   }
 
   async delete(id: number, payload: DeleteOrderDto): Promise<ResponseSuccess> {
+    // Validasi: Order hanya boleh dihapus jika tanggal invoice >= hari ini
+    const orderCheck = await this.ordersRepo.findOne({
+      where: { id },
+      select: ['id', 'orderNumber', 'invoiceDate'],
+    });
+
+    if (!orderCheck) {
+      throw new NotFoundException('Order tidak ditemukan');
+    }
+
+    // Validasi: Harus ada invoice date
+    if (!orderCheck.invoiceDate) {
+      throw new BadRequestException(
+        'Order belum memiliki tanggal invoice dan tidak dapat dihapus.',
+      );
+    }
+
+    // Validasi tanggal invoice
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const invoiceDate = new Date(orderCheck.invoiceDate);
+    invoiceDate.setHours(0, 0, 0, 0);
+
+    if (invoiceDate < today) {
+      throw new BadRequestException(
+        `Invoice tanggal ${invoiceDate.toLocaleDateString('id-ID')} sudah terlewat dan tidak dapat dihapus. Hanya invoice hari ini atau masa depan yang dapat dihapus.`,
+      );
+    }
     // First, get the order with its items to reverse inventory transactions
     const order = await this.ordersRepo.findOne({
       where: { id },
@@ -551,6 +637,7 @@ export class OrdersService extends BaseResponse {
 
     // ✅ Reverse inventory transactions for each order item
     // This decrements daily_inventory.dipesan and creates cancellation audit trail
+    // BUT only for same-day orders (where inventory was already reserved)
     const userId =
       typeof payload.deletedBy === 'object'
         ? payload.deletedBy.id
@@ -560,26 +647,45 @@ export class OrdersService extends BaseResponse {
       throw new BadRequestException('deletedBy user ID is required');
     }
 
-    for (const orderItem of order.orderItems) {
-      try {
-        await this.inventoryTransactionService.reverseSale(
-          order.id,
-          orderItem.productCodeId,
-          orderItem.quantity,
-          userId,
-          `Order ${order.orderNumber} cancelled/deleted`,
-        );
-      } catch (error) {
-        // Log error but continue with deletion
-        console.error(
-          `[ORDER ${order.orderNumber}] Failed to reverse inventory transaction for product ${orderItem.productCodeId}:`,
-          error.message,
-        );
-        // In production, you might want to:
-        // 1. Alert admin about inventory inconsistency
-        // 2. Create manual adjustment task
-        // Note: We continue with soft delete even if reversal fails
+    // ✅ Check if invoice date is today (same-day order) - reuse today variable from above
+    const invoiceDateOnly = new Date(order.invoiceDate);
+    invoiceDateOnly.setHours(0, 0, 0, 0);
+
+    const isSameDayOrder = invoiceDateOnly.getTime() === today.getTime();
+
+    if (isSameDayOrder) {
+      // ✅ SAME-DAY ORDER: Reverse inventory transaction
+      this.logger.log(
+        `[ORDER ${order.orderNumber}] Same-day order - reversing inventory transactions`,
+      );
+
+      for (const orderItem of order.orderItems) {
+        try {
+          await this.inventoryTransactionService.reverseSale(
+            order.id,
+            orderItem.productCodeId,
+            orderItem.quantity,
+            userId,
+            `Order ${order.orderNumber} cancelled/deleted`,
+            order.invoiceDate, // ✅ CRITICAL: Pass invoice date to reverse correct daily_inventory
+          );
+        } catch (error) {
+          // Log error but continue with deletion
+          console.error(
+            `[ORDER ${order.orderNumber}] Failed to reverse inventory transaction for product ${orderItem.productCodeId}:`,
+            error.message,
+          );
+          // In production, you might want to:
+          // 1. Alert admin about inventory inconsistency
+          // 2. Create manual adjustment task
+          // Note: We continue with soft delete even if reversal fails
+        }
       }
+    } else {
+      // ✅ FUTURE-DATED ORDER: No need to reverse (was never reserved)
+      this.logger.log(
+        `[ORDER ${order.orderNumber}] Future-dated order - no inventory reversal needed`,
+      );
     }
 
     // Perform soft delete
@@ -597,6 +703,9 @@ export class OrdersService extends BaseResponse {
     this.logger.log(
       `Order ${order.orderNumber} deleted and inventory reversed by user ${userId}`,
     );
+
+    // ✅ Emit ORDER_CANCELLED notification
+    // [ROLLED BACK] Emit notification disabled
 
     return this._success(`Data pesanan dengan ID ${id} berhasil dihapus.`);
   }

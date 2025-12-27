@@ -14,7 +14,7 @@ export class Users extends BaseEntity {
   @Column({ unique: true, length: 255 })
   email: string;
 
-  @Column()
+  @Column({ default: false })
   isEmailVerified: boolean;
 
   @Column()

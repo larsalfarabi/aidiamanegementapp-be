@@ -1,6 +1,11 @@
 import * as dotenv from 'dotenv';
 dotenv.config();
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  UnauthorizedException,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import BaseResponse from '../../common/response/base.response';
 import { Users } from '../users/entities/users.entity';
 import { Repository } from 'typeorm';
@@ -9,7 +14,6 @@ import { JwtService } from '@nestjs/jwt';
 import { jwtPayload } from './auth.interface';
 import { ResponseSuccess } from '../../common/interface/response.interface';
 import { LoginDto, RefreshTokenDto } from './dto/auth.dto';
-import { NotFoundException } from '@nestjs/common/exceptions';
 import { HashUtil } from '../../common/utils/hash.util';
 import { jwtConfig } from '../../config/jwt.config';
 
@@ -36,33 +40,35 @@ export class AuthService extends BaseResponse {
   }
 
   async login(payload: LoginDto): Promise<ResponseSuccess> {
-    console.log('payload email =>', payload.email);
+    console.log('🔐 [AUTH] Login attempt for email:', payload.email);
+
     const user = await this.userRepository.findOne({
-      where: { email: payload.email },
+      where: {
+        email: payload.email,
+      },
+      relations: ['roles', 'roles.permissions'],
     });
 
     if (!user) {
-      throw new NotFoundException(
-        'Email yang Anda masukkan belum terdaftar. Silakan periksa kembali atau hubungi admin untuk mendaftar.',
-      );
+      console.error('❌ [AUTH] User not found:', payload.email);
+      throw new NotFoundException('User tidak ditemukan');
     }
 
     if (!user.isActive) {
-      throw new UnauthorizedException(
-        'Akun Anda sedang tidak aktif. Silakan hubungi admin untuk mengaktifkan kembali akun Anda.',
-      );
+      console.error('❌ [AUTH] User inactive:', payload.email);
+      throw new UnauthorizedException('Akun Anda tidak aktif');
     }
 
-    const isPasswordValid = await this.hashUtil.verifyPassword(
+    const validate = await this.hashUtil.verifyPassword(
       payload.password,
       user.password,
     );
-
-    if (!isPasswordValid) {
-      throw new UnauthorizedException(
-        'Password yang Anda masukkan salah. Silakan coba lagi atau gunakan fitur lupa password.',
-      );
+    if (!validate) {
+      console.error('❌ [AUTH] Invalid password for:', payload.email);
+      throw new BadRequestException('Email atau password salah');
     }
+
+    console.log('✅ [AUTH] Password validated, generating tokens...');
 
     const jwtPayload: jwtPayload = {
       id: user.id,
@@ -88,41 +94,58 @@ export class AuthService extends BaseResponse {
       ),
     ]);
 
-    // Update refresh token and last login
-    this.userRepository
-      .update(user.id, {
-        refresh_token: refresh_token,
-        lastLoginAt: new Date(),
-      })
-      .catch((err) => {
-        console.error('Failed to update user login data:', err);
-      });
+    await this.userRepository.update(user.id, {
+      refresh_token: refresh_token,
+      lastLoginAt: new Date(),
+    });
 
-    return this._success('Berhasil masuk! Selamat datang kembali.', {
-      data: {
-        id: user.id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        roleId: user.roleId,
-        roles: user.roles,
-        isEmailVerified: user.isEmailVerified,
-        isActive: user.isActive,
-        lastLoginAt: new Date(),
-      },
+    const { password, ...userWithoutPassword } = user;
+
+    console.log(
+      '✅ [AUTH] Login successful for:',
+      user.email,
+      '| Role:',
+      user.roles?.name,
+    );
+
+    return this._success('Login berhasil', {
       access_token,
       refresh_token,
+      user: userWithoutPassword,
     });
   }
 
   async refreshToken(payload: RefreshTokenDto): Promise<ResponseSuccess> {
+    console.log(
+      '🔄 [AUTH] Refresh token request for refresh token:',
+      payload.refresh_token,
+    );
+
     // Check if refresh_token is provided and not empty
     if (!payload.refresh_token || payload.refresh_token.trim() === '') {
+      console.error('❌ [AUTH] No refresh token provided');
       throw new UnauthorizedException(
         'Sesi Anda telah berakhir. Silakan login kembali untuk melanjutkan.',
       );
     }
 
+    // Verify token first before database lookup (performance optimization)
+    try {
+      await this.jwtService.verify(payload.refresh_token, {
+        secret: jwtConfig.refresh_token_secret,
+      });
+      console.log('✅ [AUTH] Refresh token verified successfully');
+    } catch (error) {
+      console.error(
+        '❌ [AUTH] Refresh token verification failed:',
+        error.message,
+      );
+      throw new UnauthorizedException(
+        'Sesi Anda telah berakhir atau tidak valid. Silakan login kembali untuk melanjutkan.',
+      );
+    }
+
+    // Find user with matching refresh token
     const user = await this.userRepository.findOne({
       where: {
         id: payload.id,
@@ -133,20 +156,16 @@ export class AuthService extends BaseResponse {
     });
 
     if (!user) {
+      console.error(
+        '❌ [AUTH] User not found or refresh token mismatch for ID:',
+        payload.id,
+      );
       throw new UnauthorizedException(
         'Sesi Anda tidak valid atau telah berakhir. Silakan login kembali.',
       );
     }
 
-    try {
-      await this.jwtService.verify(payload.refresh_token, {
-        secret: jwtConfig.refresh_token_secret,
-      });
-    } catch (error) {
-      throw new UnauthorizedException(
-        'Sesi Anda telah berakhir atau tidak valid. Silakan login kembali untuk melanjutkan.',
-      );
-    }
+    console.log('✅ [AUTH] User found, generating new tokens...');
 
     const jwtPayload: jwtPayload = {
       id: user.id,
@@ -159,6 +178,7 @@ export class AuthService extends BaseResponse {
       lastLoginAt: user.lastLoginAt,
     };
 
+    // Generate new tokens
     const [access_token, new_refresh_token] = await Promise.all([
       this.generateJWT(
         jwtPayload,
@@ -172,35 +192,49 @@ export class AuthService extends BaseResponse {
       ),
     ]);
 
-    // Update refresh token di database
+    // Update refresh token di database (rotate token)
     await this.userRepository.update(user.id, {
       refresh_token: new_refresh_token,
       lastLoginAt: new Date(),
     });
 
+    console.log(
+      '✅ [AUTH] Tokens refreshed successfully for user:',
+      user.email,
+    );
+
     return this._success('Sesi berhasil diperbarui', {
       access_token,
       refresh_token: new_refresh_token,
+      user: {
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        roleId: user.roleId,
+      },
     });
   }
 
-  async logout(userId: number): Promise<ResponseSuccess> {
+  async logout(id: number): Promise<ResponseSuccess> {
+    console.log('🚪 [AUTH] Logout request for user ID:', id);
+
     const user = await this.userRepository.findOne({
-      where: { id: userId, isActive: true },
-      select: ['id', 'refresh_token'],
+      where: { id },
     });
 
     if (!user) {
-      throw new NotFoundException(
-        'Akun Anda tidak ditemukan. Silakan periksa kembali atau hubungi admin.',
-      );
+      console.error('❌ [AUTH] Logout failed - User not found:', id);
+      throw new NotFoundException('User tidak ditemukan');
     }
 
-    await this.userRepository.update(userId, {
-      refresh_token: null!,
+    await this.userRepository.update(id, {
+      refresh_token: undefined,
     });
 
-    return this._success('Berhasil keluar. Sampai jumpa lagi!');
+    console.log('✅ [AUTH] Logout successful for:', user.email);
+
+    return this._success('Logout berhasil');
   }
 
   async getProfile(userId: number): Promise<ResponseSuccess> {

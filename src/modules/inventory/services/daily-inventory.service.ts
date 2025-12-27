@@ -21,6 +21,7 @@ import {
 } from '../entity/inventory-transactions.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import BaseResponse from '../../../common/response/base.response';
+import { FilterDailyInventoryDto } from '../dto/filter-daily-inventory.dto';
 import {
   ResponsePagination,
   ResponseSuccess,
@@ -65,26 +66,25 @@ export class DailyInventoryService extends BaseResponse {
    * - isActive: boolean
    * - page, pageSize: pagination
    */
-  async findAll(query: any): Promise<ResponsePagination> {
+  async findAll(query: FilterDailyInventoryDto): Promise<ResponsePagination> {
     const {
       businessDate,
       productCodeId,
       stockStatus,
       isActive,
+      mainCategory,
       page = 1,
       pageSize = 10,
     } = query;
 
-    // Default to today if no date specified
-    const targetDate = businessDate || this.formatDate(new Date());
-
     const queryBuilder = this.dailyInventoryRepo
       .createQueryBuilder('di')
       .leftJoinAndSelect('di.productCode', 'pc')
-      .leftJoinAndSelect('pc.productId', 'product')
-      .leftJoinAndSelect('pc.sizeId', 'size')
-      .leftJoinAndSelect('pc.categoryId', 'category')
-      .where('di.businessDate = :businessDate', { businessDate: targetDate })
+      .leftJoinAndSelect('pc.product', 'product')
+      .leftJoinAndSelect('pc.size', 'size')
+      .leftJoinAndSelect('pc.category', 'mainCat') // SWAPPED: pc.category = Main Category (level 0)
+      .leftJoinAndSelect('product.category', 'subCat') // SWAPPED: product.category = Sub Category (level 1)
+      .where('di.businessDate = :businessDate', { businessDate: businessDate })
       .andWhere('di.deletedAt IS NULL');
 
     // Filter by productCodeId
@@ -99,6 +99,11 @@ export class DailyInventoryService extends BaseResponse {
       queryBuilder.andWhere('di.isActive = :isActive', { isActive });
     }
 
+    // Filter by main category (SWAPPED: now from ProductCodes.category)
+    if (mainCategory) {
+      queryBuilder.andWhere('mainCat.name = :mainCategory', { mainCategory });
+    }
+
     // Get total count
     const total = await queryBuilder.getCount();
 
@@ -107,7 +112,7 @@ export class DailyInventoryService extends BaseResponse {
     queryBuilder.skip(skip).take(pageSize);
 
     // Order by product name
-    queryBuilder.orderBy('product.productName', 'ASC');
+    queryBuilder.orderBy('product.name', 'ASC');
 
     const items = await queryBuilder.getMany();
 
@@ -134,9 +139,9 @@ export class DailyInventoryService extends BaseResponse {
       where: { id, deletedAt: IsNull() },
       relations: [
         'productCode',
-        'productCode.productId',
-        'productCode.sizeId',
-        'productCode.categoryId',
+        'productCode.product',
+        'productCode.size',
+        'productCode.category',
       ],
     });
 
@@ -162,9 +167,9 @@ export class DailyInventoryService extends BaseResponse {
       },
       relations: [
         'productCode',
-        'productCode.productId',
-        'productCode.sizeId',
-        'productCode.categoryId',
+        'productCode.product',
+        'productCode.size',
+        'productCode.category',
       ],
     });
 
@@ -192,9 +197,9 @@ export class DailyInventoryService extends BaseResponse {
       },
       relations: [
         'productCode',
-        'productCode.productId',
-        'productCode.sizeId',
-        'productCode.categoryId',
+        'productCode.product',
+        'productCode.size',
+        'productCode.category',
       ],
     });
 
@@ -324,7 +329,7 @@ export class DailyInventoryService extends BaseResponse {
    */
   async softDelete(id: number): Promise<ResponseSuccess> {
     const inventory = await this.dailyInventoryRepo.findOne({
-      where: { id, deletedAt: IsNull() },
+      where: { id },
     });
 
     if (!inventory) {
@@ -333,7 +338,109 @@ export class DailyInventoryService extends BaseResponse {
 
     await this.dailyInventoryRepo.softDelete(id);
 
-    return this._success('Daily inventory deleted successfully', null);
+    return this._success('Daily inventory deleted successfully');
+  }
+
+  /**
+   * POST /inventory/daily/bulk-register - Bulk register products to inventory
+   *
+   * Human-Centered Design: One-click setup for testing or initial deployment
+   *
+   * @param mainCategory Filter products by main category (optional - if not provided, register ALL)
+   * @param initialStock Initial stock amount (default: 100 for testing)
+   * @param minimumStock Minimum stock threshold (default: 10)
+   * @param userId User performing the action
+   */
+  async bulkRegisterProducts(
+    mainCategory: string | null,
+    initialStock: number,
+    minimumStock: number,
+    userId: number,
+  ): Promise<ResponseSuccess> {
+    const businessDate = new Date().toISOString().split('T')[0];
+
+    // Get all product codes, optionally filtered by mainCategory
+    const queryBuilder = this.productCodesRepo
+      .createQueryBuilder('pc')
+      .leftJoinAndSelect('pc.product', 'product')
+      .leftJoinAndSelect('product.category', 'category')
+      .leftJoinAndSelect('pc.size', 'size')
+      .where('pc.isActive = :isActive', { isActive: true });
+
+    if (mainCategory) {
+      queryBuilder.andWhere('category.name = :mainCategory', { mainCategory });
+    }
+
+    const productCodes = await queryBuilder.getMany();
+
+    if (productCodes.length === 0) {
+      throw new NotFoundException(
+        mainCategory
+          ? `No active products found for category: ${mainCategory}`
+          : 'No active products found',
+      );
+    }
+
+    // Get existing inventory records for today
+    const existingInventory = await this.dailyInventoryRepo.find({
+      where: {
+        businessDate: businessDate as any,
+        deletedAt: IsNull(),
+      },
+    });
+
+    const existingProductCodeIds = new Set(
+      existingInventory.map((inv) => inv.productCodeId),
+    );
+
+    // Filter products that are not yet registered
+    const productsToRegister = productCodes.filter(
+      (pc) => !existingProductCodeIds.has(pc.id),
+    );
+
+    if (productsToRegister.length === 0) {
+      return this._success('All products already registered in inventory', {
+        totalProducts: productCodes.length,
+        alreadyRegistered: existingProductCodeIds.size,
+        newlyRegistered: 0,
+      });
+    }
+
+    // Bulk create inventory records
+    const inventoryRecords = productsToRegister.map((pc) =>
+      this.dailyInventoryRepo.create({
+        productCodeId: pc.id,
+        businessDate: businessDate as any,
+        stokAwal: initialStock,
+        barangMasuk: 0,
+        dipesan: 0,
+        barangOutRepack: 0,
+        barangOutSample: 0,
+        barangOutProduksi: 0,
+        minimumStock: minimumStock,
+        maximumStock: initialStock * 2, // Set max as 2x initial stock
+        isActive: true,
+        notes: `Bulk registration - Initial stock: ${initialStock}`,
+        createdBy: userId,
+        updatedBy: userId,
+      }),
+    );
+
+    await this.dailyInventoryRepo.save(inventoryRecords);
+
+    return this._success('Products registered to inventory successfully', {
+      totalProducts: productCodes.length,
+      alreadyRegistered: existingProductCodeIds.size,
+      newlyRegistered: productsToRegister.length,
+      mainCategory: mainCategory || 'ALL',
+      initialStock,
+      minimumStock,
+      registeredProducts: productsToRegister.map((pc) => ({
+        productCode: pc.productCode,
+        name: pc.product.name,
+        category: pc.product.category.name,
+      })),
+    });
   }
 
   /**
@@ -346,8 +453,8 @@ export class DailyInventoryService extends BaseResponse {
     const items = await this.dailyInventoryRepo
       .createQueryBuilder('di')
       .leftJoinAndSelect('di.productCode', 'pc')
-      .leftJoinAndSelect('pc.productId', 'product')
-      .leftJoinAndSelect('pc.sizeId', 'size')
+      .leftJoinAndSelect('pc.product', 'product')
+      .leftJoinAndSelect('pc.size', 'size')
       .where('di.businessDate = :businessDate', { businessDate: targetDate })
       .andWhere('di.isActive = :isActive', { isActive: true })
       .andWhere('di.deletedAt IS NULL')
@@ -422,7 +529,7 @@ export class DailyInventoryService extends BaseResponse {
     const queryBuilder = this.snapshotsRepo
       .createQueryBuilder('snap')
       .leftJoinAndSelect('snap.productCode', 'pc')
-      .leftJoinAndSelect('pc.productId', 'product');
+      .leftJoinAndSelect('pc.product', 'product');
 
     // Filter by product
     if (productCodeId) {
@@ -517,5 +624,182 @@ export class DailyInventoryService extends BaseResponse {
     }
 
     return inventory;
+  }
+
+  /**
+   * Check stock availability for order items based on invoice date
+   *
+   * @param invoiceDate - The invoice date to check stock for (YYYY-MM-DD)
+   * @param orderItems - Array of { productCodeId, quantity }
+   * @returns Stock validation result with item-level details
+   */
+  async checkStock(
+    invoiceDate: string,
+    orderItems: Array<{ productCodeId: number; quantity: number }>,
+  ): Promise<ResponseSuccess> {
+    // Validate date format
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(invoiceDate)) {
+      throw new BadRequestException('Invalid date format. Use YYYY-MM-DD');
+    }
+
+    // Get today's date for validation type determination
+    const today = new Date();
+    const todayStr = this.formatDate(today);
+    const invoiceDateObj = new Date(invoiceDate);
+
+    // Determine validation type
+    let validationType: 'SAME_DAY' | 'FUTURE_DATE' | 'PAST_DATE';
+    if (invoiceDate === todayStr) {
+      validationType = 'SAME_DAY';
+    } else if (invoiceDateObj > today) {
+      validationType = 'FUTURE_DATE';
+    } else {
+      validationType = 'PAST_DATE';
+    }
+
+    // Get all product codes for the order items
+    const productCodeIds = orderItems.map((item) => item.productCodeId);
+
+    // Fetch daily inventory for the invoice date
+    const inventoryRecords = await this.dailyInventoryRepo
+      .createQueryBuilder('di')
+      .leftJoinAndSelect('di.productCode', 'pc')
+      .leftJoinAndSelect('pc.product', 'product')
+      .leftJoinAndSelect('pc.size', 'size')
+      .leftJoinAndSelect('pc.category', 'category') // ✅ SWAPPED: pc.category = Main Category (level 0)
+      .where('di.businessDate = :businessDate', { businessDate: invoiceDate })
+      .andWhere('di.productCodeId IN (:...productCodeIds)', { productCodeIds })
+      .andWhere('di.deletedAt IS NULL')
+      .getMany();
+
+    // Build a map for quick lookup
+    const inventoryMap = new Map<number, DailyInventory>();
+    inventoryRecords.forEach((inv) => {
+      inventoryMap.set(inv.productCodeId, inv);
+    });
+
+    // Validate each order item
+    const items = orderItems.map((orderItem) => {
+      const inventory = inventoryMap.get(orderItem.productCodeId);
+
+      // Default values if no inventory record found
+      if (!inventory) {
+        return {
+          productCodeId: orderItem.productCodeId,
+          productCode: 'UNKNOWN',
+          productName: 'Unknown Product',
+          requestedQuantity: orderItem.quantity,
+          availableStock: 0,
+          reservedStock: 0,
+          actualAvailable: 0,
+          minimumStock: 0,
+          stockStatus: 'OUT_OF_STOCK' as const,
+          isValid: false,
+          shortage: orderItem.quantity,
+          message: 'No inventory record found for this date',
+        };
+      }
+
+      // Calculate actual available = stokAkhir (which already includes -dipesan)
+      // stokAkhir = stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample
+      const actualAvailable = Number(inventory.stokAkhir) || 0;
+      const requestedQuantity = orderItem.quantity;
+      const shortage = Math.max(0, requestedQuantity - actualAvailable);
+
+      // Determine stock status
+      let stockStatus:
+        | 'SUFFICIENT'
+        | 'LOW_STOCK'
+        | 'INSUFFICIENT'
+        | 'OUT_OF_STOCK';
+      let isValid: boolean;
+      let message: string;
+
+      if (actualAvailable === 0) {
+        stockStatus = 'OUT_OF_STOCK';
+        isValid = false;
+        message = 'Product is out of stock';
+      } else if (requestedQuantity > actualAvailable) {
+        stockStatus = 'INSUFFICIENT';
+        isValid = false;
+        message = `Insufficient stock. Need ${shortage} more units`;
+      } else if (actualAvailable <= (Number(inventory.minimumStock) || 0)) {
+        stockStatus = 'LOW_STOCK';
+        isValid = true;
+        message = 'Stock is running low but sufficient for this order';
+      } else {
+        stockStatus = 'SUFFICIENT';
+        isValid = true;
+        message = 'Stock is sufficient';
+      }
+
+      return {
+        productCodeId: orderItem.productCodeId,
+        productCode: inventory.productCode?.productCode || 'N/A',
+        productName: inventory.productCode?.product?.name || 'Unknown',
+        size: inventory.productCode?.size?.sizeValue || 'N/A',
+        category: inventory.productCode?.category?.name || 'N/A',
+        requestedQuantity,
+        availableStock: Number(inventory.stokAkhir) || 0,
+        reservedStock: Number(inventory.dipesan) || 0,
+        actualAvailable,
+        minimumStock: Number(inventory.minimumStock) || 0,
+        stockStatus,
+        isValid,
+        shortage,
+        message,
+      };
+    });
+
+    // Calculate summary
+    const summary = {
+      totalItems: items.length,
+      sufficientItems: items.filter((i) => i.stockStatus === 'SUFFICIENT')
+        .length,
+      lowStockItems: items.filter((i) => i.stockStatus === 'LOW_STOCK').length,
+      insufficientItems: items.filter((i) => i.stockStatus === 'INSUFFICIENT')
+        .length,
+      outOfStockItems: items.filter((i) => i.stockStatus === 'OUT_OF_STOCK')
+        .length,
+    };
+
+    // Determine overall validation result
+    const hasInsufficientStock =
+      summary.insufficientItems > 0 || summary.outOfStockItems > 0;
+    const isValid = !hasInsufficientStock;
+
+    // For same-day orders, block if insufficient
+    // For future orders, warn but don't block
+    const shouldBlock = validationType === 'SAME_DAY' && hasInsufficientStock;
+
+    // Build response message
+    let validationMessage: string;
+    if (validationType === 'SAME_DAY') {
+      if (shouldBlock) {
+        validationMessage =
+          'Cannot create order: Insufficient stock for same-day invoice';
+      } else {
+        validationMessage = 'Stock validation passed for same-day invoice';
+      }
+    } else if (validationType === 'FUTURE_DATE') {
+      if (hasInsufficientStock) {
+        validationMessage = `Warning: Projected stock shortage for invoice date ${invoiceDate}. Ensure production before this date.`;
+      } else {
+        validationMessage = `Stock projection looks good for invoice date ${invoiceDate}`;
+      }
+    } else {
+      validationMessage = `Historical stock check for date ${invoiceDate}`;
+    }
+
+    return this._success('Stock validation completed', {
+      isValid,
+      shouldBlock,
+      validationType,
+      invoiceDate,
+      items,
+      summary,
+      message: validationMessage,
+    });
   }
 }

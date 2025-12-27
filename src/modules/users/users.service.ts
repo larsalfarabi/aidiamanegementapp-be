@@ -13,6 +13,9 @@ import { PaginationDto } from '../../common/dto/pagination.dto';
 import { RedisService } from '../redis/redis.service';
 import { ResponseSuccess } from '../../common/interface/response.interface';
 import { CreateUserDto, UpdateUserDto } from './dto/users.dto';
+import { MailService } from '../mail/mail.service';
+import { HashUtil } from 'src/common/utils/hash.util';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class UsersService extends BaseResponse {
@@ -21,7 +24,9 @@ export class UsersService extends BaseResponse {
   constructor(
     @InjectRepository(Users)
     private readonly userRepository: Repository<Users>,
-    private readonly redisService: RedisService, // Inject RedisService
+    private readonly redisService: RedisService,
+    private readonly mailService: MailService,
+    private readonly hashUtil: HashUtil,
   ) {
     super();
   }
@@ -141,6 +146,42 @@ export class UsersService extends BaseResponse {
     );
   }
 
+  /**
+   * Generate secure random password
+   * Format: 3 uppercase + 3 lowercase + 3 digits + 1 special = 10 chars
+   * Example: ABC123xyz!
+   */
+  private generateSecurePassword(): string {
+    const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const lowercase = 'abcdefghijklmnopqrstuvwxyz';
+    const digits = '0123456789';
+    const special = '!@#$%^&*';
+
+    const getRandomChars = (charset: string, length: number): string => {
+      return Array.from(
+        crypto.randomBytes(length * 2),
+        (byte) => charset[byte % charset.length],
+      )
+        .slice(0, length)
+        .join('');
+    };
+
+    // Generate components
+    const upper = getRandomChars(uppercase, 3);
+    const lower = getRandomChars(lowercase, 3);
+    const digit = getRandomChars(digits, 3);
+    const spec = getRandomChars(special, 1);
+
+    // Combine and shuffle
+    const combined = (upper + lower + digit + spec).split('');
+    for (let i = combined.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [combined[i], combined[j]] = [combined[j], combined[i]];
+    }
+
+    return combined.join('');
+  }
+
   async create(payload: CreateUserDto): Promise<ResponseSuccess> {
     const checkExist = await this.userRepository.findOne({
       where: { email: payload.email },
@@ -148,8 +189,59 @@ export class UsersService extends BaseResponse {
 
     if (checkExist) throw new ConflictException('Email sudah terdaftar');
 
-    await this.userRepository.save({ ...payload });
-    return this._success('Berhasil membuat user');
+    // Generate password if not provided
+    const generatedPassword = this.generateSecurePassword();
+
+    // Hash password before saving
+    const hashedPassword = await this.hashUtil.hashPassword(generatedPassword);
+
+    const userPayload = {
+      ...payload,
+      password: hashedPassword, // Hashed password for database
+    };
+
+    // Save user to database
+    const savedUser = await this.userRepository.save(userPayload);
+
+    // Get user with role information for email
+    const userWithRole = await this.userRepository.findOne({
+      where: { id: savedUser.id },
+      relations: ['roles'],
+    });
+
+    // Send welcome email with credentials
+    try {
+      const loginUrl = process.env.NEXTAUTH_URL || 'http://localhost:3000';
+
+      await this.mailService.sendWelcomeEmail({
+        userEmail: savedUser.email,
+        userName: `${savedUser.firstName} ${savedUser.lastName}`,
+        generatedPassword: generatedPassword,
+        loginUrl: loginUrl,
+        createdAt: new Date().toLocaleString('id-ID', {
+          dateStyle: 'long',
+          timeStyle: 'short',
+          timeZone: 'Asia/Jakarta',
+        }),
+        roleName: userWithRole?.roles?.name || 'User',
+      });
+
+      this.logger.log(`✅ Welcome email sent to ${savedUser.email}`);
+    } catch (emailError) {
+      this.logger.error(
+        `⚠️ Failed to send welcome email to ${savedUser.email}:`,
+        emailError.message,
+      );
+      // Don't throw error - user is created successfully, email is optional
+    }
+
+    return this._success(
+      'Berhasil membuat user. Email dengan kredensial login telah dikirim.',
+      {
+        email: savedUser.email,
+        emailSent: true,
+      },
+    );
   }
 
   async update(id: number, payload: UpdateUserDto): Promise<ResponseSuccess> {

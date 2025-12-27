@@ -14,8 +14,12 @@ import { RedisModule } from './modules/redis/redis.module';
 import { ProductsModule } from './modules/products/products.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { OrdersModule } from './modules/orders/orders.module';
-import { createKeyv } from '@keyv/redis';
 import { InventoryModule } from './modules/inventory/inventory.module';
+import { ReportsModule } from './modules/reports/reports.module';
+import { MailModule } from './modules/mail/mail.module';
+import { redisStore } from 'cache-manager-redis-yet';
+import { ProductionModule } from './modules/production/production.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -25,19 +29,37 @@ import { InventoryModule } from './modules/inventory/inventory.module';
     TypeOrmModule.forRoot(typeOrmConfig),
     ScheduleModule.forRoot(), // Enable scheduled tasks (cron jobs)
     CacheModule.registerAsync({
-      imports: [ConfigModule],
       isGlobal: true,
+      imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => {
-        const host = configService.get<string>('REDIS_HOST', 'localhost');
-        const port = configService.get<number>('REDIS_PORT', 6379);
-        const ttl = configService.get<number>('CACHE_TTL', 300) * 1000; // Convert to milliseconds
+        const redisConfig = {
+          socket: {
+            host: configService.get<string>('REDIS_HOST', '127.0.0.1'),
+            port: configService.get<number>('REDIS_PORT', 6379),
+          },
+          password: configService.get<string>('REDIS_PASSWORD') || undefined,
+          database: configService.get<number>('REDIS_DB', 0),
+          keyPrefix: '', // PENTING: Set empty string untuk tidak ada prefix
+        };
 
-        // Create Keyv instance with proper configuration
-        const keyv = createKeyv(`redis://${host}:${port}`);
+        console.log('🔧 Redis Configuration:', {
+          host: redisConfig.socket.host,
+          port: redisConfig.socket.port,
+          database: redisConfig.database,
+          hasPassword: !!redisConfig.password,
+          keyPrefix: redisConfig.keyPrefix,
+        });
+
+        const store = await redisStore(redisConfig);
+        console.log('✅ Redis Store created:', {
+          name: store.name,
+          hasClient: !!store.client,
+          clientIsReady: store.client?.isReady,
+        });
 
         return {
-          stores: [keyv],
-          ttl: ttl,
+          store: store,
+          ttl: configService.get<number>('CACHE_TTL', 300000), // milliseconds
         };
       },
       inject: [ConfigService],
@@ -51,6 +73,10 @@ import { InventoryModule } from './modules/inventory/inventory.module';
     CustomersModule,
     OrdersModule,
     InventoryModule,
+    ReportsModule,
+    ProductionModule,
+    DashboardModule,
+    MailModule,
   ],
   controllers: [AppController],
   providers: [AppService],

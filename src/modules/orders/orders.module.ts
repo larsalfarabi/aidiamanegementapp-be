@@ -8,6 +8,10 @@ import { Customers } from '../customers/entity/customers.entity';
 import { CustomerProductCatalogs } from '../customers/entity/customer_product_catalog.entity';
 import { ProductCodes } from '../products/entity/product_codes.entity';
 import { InventoryModule } from '../inventory/inventory.module';
+import { Users } from '../users/entities/users.entity';
+import { RedisModule } from '../redis/redis.module';
+import { PermissionGuard } from '../auth/guards/permission.guard';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -17,11 +21,14 @@ import { InventoryModule } from '../inventory/inventory.module';
       Customers,
       CustomerProductCatalogs,
       ProductCodes,
+      Users,
     ]),
-    InventoryModule, // ✅ Import to access InventoryTransactionService
+    InventoryModule,
+    RedisModule,
+    NotificationsModule, // ✅ Import to access NotificationEventEmitter
   ],
   controllers: [OrdersController],
-  providers: [OrdersService],
+  providers: [OrdersService, PermissionGuard],
   exports: [OrdersService],
 })
 export class OrdersModule {}

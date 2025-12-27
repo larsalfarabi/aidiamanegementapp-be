@@ -5,12 +5,10 @@ import {
   JoinColumn,
   Index,
   DeleteDateColumn,
-  PrimaryGeneratedColumn,
-  CreateDateColumn,
-  UpdateDateColumn,
 } from 'typeorm';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { Users } from '../../users/entities/users.entity';
+import { BaseEntity } from '../../../common/entities/base.entity';
 
 /**
  * DailyInventory Entity
@@ -27,16 +25,13 @@ import { Users } from '../../users/entities/users.entity';
  * - barangOutSample updated when samples are distributed
  *
  * Formula (GENERATED COLUMN):
- * stokAkhir = stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample
+ * stokAkhir = stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample - barangOutProduksi
  */
 @Entity({ name: 'daily_inventory', synchronize: false })
 @Index(['productCodeId', 'businessDate'], { unique: true }) // One record per product per day
 @Index(['businessDate']) // For daily queries
 @Index(['isActive']) // For active records only
-export class DailyInventory {
-  @PrimaryGeneratedColumn('increment')
-  id: number;
-
+export class DailyInventory extends BaseEntity {
   // Business Date (partition key)
   @Column({ type: 'date', comment: 'Business date (partition by date)' })
   businessDate: Date;
@@ -95,9 +90,18 @@ export class DailyInventory {
   })
   barangOutSample: number;
 
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    default: 0,
+    comment: 'Goods out for production (material consumption)',
+  })
+  barangOutProduksi: number;
+
   /**
    * GENERATED COLUMN - Auto-calculated by database
-   * Formula: stokAkhir = stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample
+   * Formula: stokAkhir = stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample - barangOutProduksi
    *
    * NOTE: This column is NOT managed by TypeORM!
    * The database automatically calculates this value using GENERATED ALWAYS AS.
@@ -109,8 +113,9 @@ export class DailyInventory {
     scale: 2,
     generatedType: 'STORED',
     asExpression:
-      '(stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample)',
-    comment: 'Ending stock (GENERATED COLUMN - auto-calculated)',
+      '(stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample - barangOutProduksi)',
+    comment:
+      'Ending stock (GENERATED COLUMN - includes production material out)',
     insert: false, // Prevent insertion
     update: false, // Prevent updates
     select: true, // Include in SELECT queries
@@ -143,21 +148,20 @@ export class DailyInventory {
   @Column({ type: 'text', nullable: true, comment: 'Additional notes' })
   notes: string;
 
-  // Audit Fields
-  @CreateDateColumn({
-    type: 'timestamp',
-    default: () => 'CURRENT_TIMESTAMP',
-    comment: 'Record creation timestamp',
-  })
-  createdAt: Date;
+  // User Tracking
+  @Column({ nullable: true, comment: 'User ID who created this record' })
+  createdBy: number;
 
-  @UpdateDateColumn({
-    type: 'timestamp',
-    default: () => 'CURRENT_TIMESTAMP',
-    onUpdate: 'CURRENT_TIMESTAMP',
-    comment: 'Record update timestamp',
-  })
-  updatedAt: Date;
+  @ManyToOne(() => Users, { nullable: true })
+  @JoinColumn({ name: 'createdBy' })
+  creator: Users;
+
+  @Column({ nullable: true, comment: 'User ID who last updated this record' })
+  updatedBy: number;
+
+  @ManyToOne(() => Users, { nullable: true })
+  @JoinColumn({ name: 'updatedBy' })
+  updater: Users;
 
   @DeleteDateColumn({
     type: 'timestamp',
@@ -165,20 +169,6 @@ export class DailyInventory {
     comment: 'Soft delete timestamp',
   })
   deletedAt: Date;
-
-  @Column({ nullable: true, comment: 'User who created the record' })
-  createdBy: number;
-
-  @Column({ nullable: true, comment: 'User who last updated the record' })
-  updatedBy: number;
-
-  @ManyToOne(() => Users, { nullable: true })
-  @JoinColumn({ name: 'createdBy' })
-  creator: Users;
-
-  @ManyToOne(() => Users, { nullable: true })
-  @JoinColumn({ name: 'updatedBy' })
-  updater: Users;
 
   /**
    * Virtual Property: Stock Status

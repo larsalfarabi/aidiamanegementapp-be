@@ -54,7 +54,8 @@ export class CreateUserDto extends PickType(UserDto, [
   'isActive',
 ]) {
   @IsString()
-  password?: string;
+  @IsOptional()
+  password?: string; // Optional - akan di-generate otomatis jika tidak diisi
 }
 
 export class UpdateUserDto extends PartialType(UserDto) {}

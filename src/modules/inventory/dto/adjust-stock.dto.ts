@@ -3,13 +3,17 @@ import {
   IsNumber,
   IsString,
   IsOptional,
-  Min,
+  IsDateString,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
 /**
- * DTO for stock adjustment (stock opname)
- * Used when physical count doesn't match system count
+ * DTO for stock adjustment - Direct stokAwal modification
+ * Used for manual stock corrections (koreksi stok fisik)
+ *
+ * Impact: stokAwal baru = stokAwal lama + adjustmentQuantity
+ * - Positive adjustmentQuantity = Add stock (tambah stok)
+ * - Negative adjustmentQuantity = Reduce stock (kurangi stok)
  */
 export class AdjustStockDto {
   @IsNotEmpty()
@@ -18,14 +22,17 @@ export class AdjustStockDto {
   productCodeId: number;
 
   @IsNotEmpty()
+  @IsDateString()
+  businessDate: string; // Format: YYYY-MM-DD
+
+  @IsNotEmpty()
   @IsNumber()
-  @Min(0)
   @Type(() => Number)
-  physicalCount: number; // Hasil physical count
+  adjustmentQuantity: number; // Bisa positif (+) atau negatif (-)
 
   @IsNotEmpty()
   @IsString()
-  reason: string; // Alasan adjustment
+  reason: string; // Alasan adjustment (wajib untuk audit)
 
   @IsOptional()
   @IsString()
@@ -33,5 +40,5 @@ export class AdjustStockDto {
 
   @IsOptional()
   @IsString()
-  performedBy?: string; // Nama staff yang melakukan stock opname
+  performedBy?: string; // Nama staff yang melakukan adjustment
 }
