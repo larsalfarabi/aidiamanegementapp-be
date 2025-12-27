@@ -15,7 +15,7 @@ import { Users } from '../../users/entities/users.entity';
  * - { sizeValue: "1 KG", baseValue: 1, baseUnit: "KG", categoryType: "BAHAN_BAKU" }
  * - { sizeValue: "1 GLN", baseValue: 1, baseUnit: "GLN", categoryType: "BAHAN_KEMASAN" }
  */
-@Entity({ synchronize: false })
+@Entity({ synchronize: true })
 export class ProductSizes extends BaseEntity {
   @Column({ unique: true, length: 100 })
   sizeValue: string;

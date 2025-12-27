@@ -26,7 +26,7 @@ import { BaseEntity } from '../../../common/entities/base.entity';
  * - Cron job deletes snapshots older than 1 year
  * - Query: DELETE FROM daily_inventory_snapshots WHERE snapshotDate < CURDATE() - INTERVAL 1 YEAR
  */
-@Entity({ name: 'daily_inventory_snapshots', synchronize: false })
+@Entity({ name: 'daily_inventory_snapshots', synchronize: true })
 @Index(['productCodeId', 'snapshotDate']) // For product history queries
 @Index(['snapshotDate']) // For date range queries
 export class DailyInventorySnapshots {

@@ -1,6 +1,6 @@
 import { Entity, Column, ManyToOne, JoinColumn, Index } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
-import { ProductionBatches } from './production-batches.entity';
+import type { ProductionBatches } from './production-batches.entity'; // Changed to TYPE import to fix circular dependency
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { Users } from '../../users/entities/users.entity';
 
@@ -21,7 +21,7 @@ import { Users } from '../../users/entities/users.entity';
  * - Actual: 9.5kg @ Rp 5,000/kg = Rp 47,500
  * - Waste: 0.5kg = Rp 2,500
  */
-@Entity({ name: 'production_material_usage', synchronize: false })
+@Entity({ name: 'production_material_usage', synchronize: true })
 @Index(['batchId'])
 @Index(['materialProductCodeId'])
 export class ProductionMaterialUsage extends BaseEntity {
@@ -31,7 +31,7 @@ export class ProductionMaterialUsage extends BaseEntity {
   })
   batchId: number;
 
-  @ManyToOne(() => ProductionBatches, (batch) => batch.materialUsages, {
+  @ManyToOne('ProductionBatches', (batch: any) => batch.materialUsages, {
     onDelete: 'CASCADE',
   })
   @JoinColumn({ name: 'batchId' })

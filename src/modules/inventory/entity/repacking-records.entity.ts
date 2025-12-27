@@ -45,7 +45,7 @@ export enum RepackingStatus {
  * - Loss: 0.05 × 4 = 0.2 units in source product terms
  * - Loss Percentage: (0.2 / 4) × 100 = 5%
  */
-@Entity({ name: 'repacking_records', synchronize: false })
+@Entity({ name: 'repacking_records', synchronize: true })
 @Index(['businessDate']) // For daily queries
 @Index(['sourceProductCodeId']) // For source product tracking
 @Index(['targetProductCodeId']) // For target product tracking

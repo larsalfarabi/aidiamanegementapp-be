@@ -3,7 +3,7 @@ import { Roles } from '../../../modules/roles/entities/roles.entity';
 import { Column, Entity, ManyToMany, Index } from 'typeorm';
 import { Action, Resource } from '../../../common/enums/resource.enum';
 
-@Entity({ synchronize: false })
+@Entity({ synchronize: true })
 export class Permissions extends BaseEntity {
   @Column({ length: 100 })
   @Index({ unique: true })

@@ -4,7 +4,7 @@ import { Orders } from './orders.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { CustomerProductCatalogs } from '../../customers/entity/customer_product_catalog.entity';
 
-@Entity({ synchronize: false })
+@Entity({ synchronize: true })
 export class OrderItems extends BaseEntity {
   @ManyToOne(() => Orders, (order) => order.orderItems, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'orderId' })

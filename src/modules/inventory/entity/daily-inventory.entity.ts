@@ -27,7 +27,7 @@ import { BaseEntity } from '../../../common/entities/base.entity';
  * Formula (GENERATED COLUMN):
  * stokAkhir = stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample - barangOutProduksi
  */
-@Entity({ name: 'daily_inventory', synchronize: false })
+@Entity({ name: 'daily_inventory', synchronize: true })
 @Index(['productCodeId', 'businessDate'], { unique: true }) // One record per product per day
 @Index(['businessDate']) // For daily queries
 @Index(['isActive']) // For active records only

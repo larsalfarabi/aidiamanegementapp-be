@@ -1,6 +1,6 @@
 import { Entity, Column, ManyToOne, JoinColumn, Index } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
-import { ProductionFormulas } from './production-formulas.entity';
+import type { ProductionFormulas } from './production-formulas.entity'; // Changed to TYPE import
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { ProductCategories } from '../../products/entity/product_categories.entity';
 import { Users } from '../../users/entities/users.entity';
@@ -22,7 +22,7 @@ import { Users } from '../../users/entities/users.entity';
  * 4. PACKAGING: Bottle 250ML 100pcs
  * 5. PACKAGING: Cap 100pcs
  */
-@Entity({ name: 'formula_materials', synchronize: false })
+@Entity({ name: 'formula_materials', synchronize: true })
 @Index(['formulaId']) // Quick lookup by formula
 @Index(['materialProductCodeId']) // Quick lookup by material
 @Index(['sequence']) // For ordered display
@@ -33,7 +33,7 @@ export class FormulaMaterials extends BaseEntity {
   })
   formulaId: number;
 
-  @ManyToOne(() => ProductionFormulas, (formula) => formula.materials, {
+  @ManyToOne('ProductionFormulas', (formula: any) => formula.materials, {
     onDelete: 'CASCADE',
   })
   @JoinColumn({ name: 'formulaId' })

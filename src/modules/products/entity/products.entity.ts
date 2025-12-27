@@ -6,7 +6,7 @@ export enum ProductType {
   RTD = 'RTD',
   CONC = 'CONC',
 }
-@Entity({ synchronize: false })
+@Entity({ synchronize: true })
 export class Products extends BaseEntity {
   @Column({ nullable: false, length: 200 })
   name: string;

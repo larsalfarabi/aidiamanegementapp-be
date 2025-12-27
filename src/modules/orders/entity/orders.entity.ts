@@ -4,7 +4,7 @@ import { Users } from '../../users/entities/users.entity';
 import { Customers } from '../../customers/entity/customers.entity';
 import { OrderItems } from './order_items.entity';
 
-@Entity({ synchronize: false })
+@Entity({ synchronize: true })
 @Index(['isDeleted']) // Speed up soft-delete filtering
 export class Orders extends BaseEntity {
   @Column({ unique: true, length: 50 })

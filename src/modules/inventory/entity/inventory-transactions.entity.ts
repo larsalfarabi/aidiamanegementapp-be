@@ -74,7 +74,7 @@ export enum TransactionStatus {
  *   * ADJUSTMENT → stokAwal adjustment (not daily column)
  * - balanceAfter = stokAkhir after this transaction applied
  */
-@Entity({ name: 'inventory_transactions', synchronize: false })
+@Entity({ name: 'inventory_transactions', synchronize: true })
 @Index(['productCodeId', 'businessDate']) // For daily inventory updates
 @Index(['transactionType', 'businessDate']) // For transaction reports
 @Index(['orderId']) // For order tracking

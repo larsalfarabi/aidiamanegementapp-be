@@ -5,7 +5,7 @@ import { Users } from '../../users/entities/users.entity';
 import { Products } from './products.entity';
 import { ProductSizes } from './product_sizes.entity';
 
-@Entity({ synchronize: false })
+@Entity({ synchronize: true })
 export class ProductCodes extends BaseEntity {
   @Column({ unique: true, length: 50 })
   productCode: string;

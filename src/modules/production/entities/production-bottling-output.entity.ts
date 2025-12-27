@@ -38,7 +38,7 @@ import { Users } from '../../users/entities/users.entity';
  *
  * Date: December 16, 2024
  */
-@Entity({ name: 'production_bottling_outputs', synchronize: false })
+@Entity({ name: 'production_bottling_outputs', synchronize: true })
 @Index(['batchId'])
 @Index(['productCodeId'])
 export class ProductionBottlingOutput extends BaseEntity {

@@ -23,7 +23,7 @@ import { Users } from '../../users/entities/users.entity';
  * - Acknowledgment required for CRITICAL notifications
  * - Synced across devices via WebSocket
  */
-@Entity({ name: 'notification_reads', synchronize: false })
+@Entity({ name: 'notification_reads', synchronize: true })
 @Index('idx_notification_reads_unique', ['notificationId', 'userId'], {
   unique: true,
 })
