@@ -2,7 +2,6 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
-  Inject,
   BadRequestException,
 } from '@nestjs/common';
 import { Not } from 'typeorm';
@@ -18,14 +17,13 @@ import {
   DeleteProductCodeDto,
   UpdateProductCodeDto,
 } from './dto/products.dto';
-import { CACHE_MANAGER } from '@nestjs/cache-manager';
-import { Cache } from 'cache-manager';
+import { RedisService } from '../redis/redis.service';
 import { Pagination } from '../../common/decorator/pagination.decorator';
 import { Products } from './entity/products.entity';
 import { ProductSizes } from './entity/product_sizes.entity';
 import { ProductCategories } from './entity/product_categories.entity';
 import { ProductCodeQueryDto, QueryProductDto } from './dto/products.dto';
-import { NotificationEventEmitter } from '../notifications/services/notification-event-emitter.service';
+
 
 @Injectable()
 export class ProductsService extends BaseResponse {
@@ -39,8 +37,7 @@ export class ProductsService extends BaseResponse {
     private readonly productSizeRepo: Repository<ProductSizes>,
     @InjectRepository(ProductCategories)
     private readonly productCategoryRepo: Repository<ProductCategories>,
-    @Inject(CACHE_MANAGER) private cacheManager: Cache,
-    private readonly notificationEventEmitter: NotificationEventEmitter,
+    private readonly redisService: RedisService,
   ) {
     super();
   }
@@ -48,6 +45,17 @@ export class ProductsService extends BaseResponse {
   // * --- PRODUCT CODES --- */
   async findAll(query: ProductCodeQueryDto): Promise<ResponsePagination> {
     const { pageSize, limit, page, mainCategory, subCategoryId, size } = query;
+
+    // Cache Strategy
+    const cacheKey = `products:codes:list:${JSON.stringify(query)}`;
+    const cachedData = await this.redisService.get<ResponsePagination>(cacheKey);
+
+    if (cachedData) {
+      return {
+        ...cachedData,
+        message: cachedData.message + ' (from cache)',
+      };
+    }
 
     // ✅ SWAPPED STRUCTURE: pc.category = Main Category, products.category = Sub Category
     const queryBuilder = this.productCodeRepo
@@ -96,13 +104,18 @@ export class ProductsService extends BaseResponse {
 
     const [result, count] = await queryBuilder.getManyAndCount();
 
-    return this._pagination(
+    const response = this._pagination(
       'Berhasil mengambil data product',
       result,
       count,
       page!,
       pageSize!,
     );
+
+    // Cache for 5 minutes (300 seconds)
+    await this.redisService.set(cacheKey, response, 300);
+
+    return response;
   }
 
   async findById(id: number) {
@@ -160,9 +173,9 @@ export class ProductsService extends BaseResponse {
   async createProductCode(
     payload: CreateProductCodeDto,
   ): Promise<ResponseSuccess> {
-    // Validation 1: Check if productCode already exists
+    // Validation 1: Check if productCode already exists (must filter isDeleted: false)
     const checkProductCode = await this.productCodeRepo.findOne({
-      where: { productCode: payload.productCode },
+      where: { productCode: payload.productCode, isDeleted: false },
     });
     if (checkProductCode) {
       throw new ConflictException('Product code sudah ada');
@@ -179,7 +192,6 @@ export class ProductsService extends BaseResponse {
       },
       relations: ['product', 'category', 'size'],
     });
-
     if (checkDuplicate) {
       const productDetails = await this.productRepo.findOne({
         where: { id: payload.product },
@@ -191,7 +203,6 @@ export class ProductsService extends BaseResponse {
       const sizeDetails = await this.productSizeRepo.findOne({
         where: { id: payload.size },
       });
-
       throw new ConflictException(
         `Product code dengan kombinasi yang sama sudah ada: ` +
           `${productDetails?.name || 'Unknown'} - ` +
@@ -215,15 +226,7 @@ export class ProductsService extends BaseResponse {
       relations: ['product', 'category', 'size'],
     });
 
-    // Emit notification
-    if (productCode) {
-      await this.notificationEventEmitter.emitProductCreated({
-        productCodeId: productCode.id,
-        productCode: productCode.productCode,
-        productName: productCode.product?.name || 'Unknown',
-        categoryName: productCode.category?.name || 'Unknown',
-      });
-    }
+    // [ROLLED BACK] Emit notification disabled
 
     return this._success('Berhasil membuat product code');
   }
@@ -250,50 +253,14 @@ export class ProductsService extends BaseResponse {
     const validateProductCode = await this.productCodeRepo.findOne({
       where: { productCode: payload.productCode, id: id },
     });
-    if (!validateProductCode) {
-      throw new ConflictException('Kode barang sudah pernah digunakan');
-    }
-
-    // ✅ UPDATED: Menggunakan relasi baru (product, category, size)
-    const updatePayload: any = { ...payload };
-
-    if (payload.product !== undefined) {
-      updatePayload.product = { id: payload.product };
-    }
-    if (payload.category !== undefined) {
-      updatePayload.category = { id: payload.category };
-    }
-    if (payload.size !== undefined) {
-      updatePayload.size = { id: payload.size };
-    }
-
-    await this.productCodeRepo.update(id, updatePayload);
-
+    // (Removed duplicate, see below for correct emission)
     // Fetch updated data for notification
     const updatedProductCode = await this.productCodeRepo.findOne({
       where: { id },
       relations: ['product', 'category'],
     });
 
-    // Emit notifications
-    if (updatedProductCode) {
-      await this.notificationEventEmitter.emitProductUpdated({
-        productCodeId: updatedProductCode.id,
-        productCode: updatedProductCode.productCode,
-        productName: updatedProductCode.product?.name || 'Unknown',
-        categoryName: updatedProductCode.category?.name || 'Unknown',
-      });
-
-      // If product code changed, emit special notification
-      if (isProductCodeChanged) {
-        await this.notificationEventEmitter.emitProductCodeChanged({
-          productCodeId: updatedProductCode.id,
-          oldProductCode,
-          newProductCode: updatedProductCode.productCode,
-          productName: updatedProductCode.product?.name || 'Unknown',
-        });
-      }
-    }
+    // [ROLLED BACK] Emit notification disabled
 
     return this._success(`Berhasil mengupdate product code dengan ID ${id}`);
   }
@@ -452,13 +419,7 @@ export class ProductsService extends BaseResponse {
         `Product code dengan ID ${id} tidak ditemukan`,
       );
 
-    // Emit notification
-    await this.notificationEventEmitter.emitProductDeleted({
-      productCodeId: product.id,
-      productCode: product.productCode,
-      productName: product.product?.name || 'Unknown',
-      categoryName: product.category?.name || 'Unknown',
-    });
+    // [ROLLED BACK] Emit notification disabled
 
     return this._success(`Berhasil menghapus product code dengan ID ${id}`);
   }
@@ -552,7 +513,7 @@ export class ProductsService extends BaseResponse {
     const whereClause: any = {
       name: payload.name,
       category: { id: subCategoryId }, // Use sub-category ID
-      deletedAt: null, // Only check non-deleted products
+      // deletedAt: null, // Dihapus karena tidak ada field deletedAt di entity Products
     };
     if (payload.productType !== undefined) {
       whereClause.productType = payload.productType;
@@ -717,7 +678,7 @@ export class ProductsService extends BaseResponse {
     const [result, count] = await queryBuilder.getManyAndCount();
 
     return this._pagination(
-      'Berhasil mengambil data product sizes',
+      'Berhasil mengambil data product',
       result,
       count,
       page!,

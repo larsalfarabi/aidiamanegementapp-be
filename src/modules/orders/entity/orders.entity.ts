@@ -1,10 +1,11 @@
 import { BaseEntity } from '../../../common/entities/base.entity';
-import { Entity, Column, ManyToOne, JoinColumn, OneToMany } from 'typeorm';
+import { Entity, Column, ManyToOne, JoinColumn, OneToMany, Index } from 'typeorm';
 import { Users } from '../../users/entities/users.entity';
 import { Customers } from '../../customers/entity/customers.entity';
 import { OrderItems } from './order_items.entity';
 
 @Entity({ synchronize: false })
+@Index(['isDeleted']) // Speed up soft-delete filtering
 export class Orders extends BaseEntity {
   @Column({ unique: true, length: 50 })
   orderNumber: string; // Order number (internal)
@@ -17,9 +18,11 @@ export class Orders extends BaseEntity {
   customer: Customers;
 
   @Column()
+  @Index() // Speed up filtering by customer
   customerId: number;
 
   @Column({ type: 'date' })
+  @Index() // Speed up date range reports
   orderDate: Date; // Tanggal Order
 
   @Column({ type: 'date', nullable: true })

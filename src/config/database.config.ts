@@ -11,4 +11,7 @@ export const typeOrmConfig: TypeOrmModuleOptions = {
   entities: ['dist/**/*.entity{.ts,.js}'],
   synchronize: false,
   logging: true,
+  extra: {
+    connectionLimit: 20, // Connection Pooling (Optimized)
+  },
 };

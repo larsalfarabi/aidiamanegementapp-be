@@ -5,7 +5,13 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, Like, Not } from 'typeorm';
+import {
+  Repository,
+  DataSource,
+  Like,
+  EntityManager,
+  QueryRunner,
+} from 'typeorm';
 import { DailyInventory } from '../entity/daily-inventory.entity';
 import {
   InventoryTransactions,
@@ -37,7 +43,7 @@ import {
 } from '../dto/record-transaction.dto';
 import { FilterTransactionsDto } from '../dto/filter-transactions.dto';
 import { AdjustStockDto } from '../dto/adjust-stock.dto';
-import { NotificationEventEmitter } from '../../notifications/services/notification-event-emitter.service';
+
 
 /**
  * InventoryTransactionService
@@ -79,7 +85,7 @@ export class InventoryTransactionService extends BaseResponse {
     private readonly productCodesRepo: Repository<ProductCodes>,
 
     private readonly dataSource: DataSource,
-    private readonly notificationEventEmitter: NotificationEventEmitter,
+
   ) {
     super();
   }
@@ -204,15 +210,7 @@ export class InventoryTransactionService extends BaseResponse {
         `Production recorded: Product ${dto.productCodeId}, Qty ${dto.quantity}, Batch ${dto.productionBatchNumber}`,
       );
 
-      // ✅ Emit PRODUCTION_IN notification (MEDIUM priority - informational)
-      await this.notificationEventEmitter.emitProductionIn({
-        transactionId: savedTransaction.id,
-        productCode: updatedInventory?.productCode?.productCode || 'Unknown',
-        productName:
-          updatedInventory?.productCode?.product?.name || 'Unknown Product',
-        quantity: dto.quantity,
-        batchNumber: dto.productionBatchNumber || 'N/A',
-      });
+
 
       return this._success('Production recorded successfully', {
         dailyInventory: updatedInventory,
@@ -394,15 +392,26 @@ export class InventoryTransactionService extends BaseResponse {
   async recordSale(
     dto: RecordSaleDto,
     userId: number,
+    externalManager?: EntityManager, // ✅ ADDED: Optional external manager
   ): Promise<ResponseSuccess> {
-    // Retry logic for handling concurrent transaction number generation
-    const maxRetries = 3;
+    const isExternalTransaction = !!externalManager;
+    // Jika transaksi external, kita tidak melakukan retry di sini (biarkan parent yang handle)
+    const maxRetries = isExternalTransaction ? 1 : 3;
     let lastError: any;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      const queryRunner = this.dataSource.createQueryRunner();
-      await queryRunner.connect();
-      await queryRunner.startTransaction();
+      let queryRunner: QueryRunner | undefined;
+      let manager: EntityManager;
+
+      // ✅ SETUP MANAGER
+      if (isExternalTransaction) {
+        manager = externalManager;
+      } else {
+        queryRunner = this.dataSource.createQueryRunner();
+        await queryRunner.connect();
+        await queryRunner.startTransaction();
+        manager = queryRunner.manager;
+      }
 
       try {
         // Verify product exists
@@ -417,10 +426,6 @@ export class InventoryTransactionService extends BaseResponse {
         }
 
         // ✅ CRITICAL FIX: Use invoiceDate instead of today for inventory reservation
-        // This ensures:
-        // - Same-day orders (invoiceDate = today) → update today's dipesan
-        // - Future orders (invoiceDate = future) → update future date's dipesan
-        // - This aligns with stock validation logic in check-stock endpoint
         const targetDate = dto.invoiceDate
           ? this.formatDate(new Date(dto.invoiceDate))
           : this.formatDate(new Date());
@@ -431,15 +436,15 @@ export class InventoryTransactionService extends BaseResponse {
         );
 
         // Get or create daily inventory for the invoice/business date
+        // Note: Pastikan getOrCreateDailyInventory support EntityManager atau ambil queryRunner dari manager
         const dailyInventory = await this.getOrCreateDailyInventory(
-          queryRunner,
+          manager.queryRunner || queryRunner, // Fallback to ensure queryRunner is passed if needed
           dto.productCodeId,
-          businessDate, // ✅ Use invoice date, not today
+          businessDate,
           userId,
         );
 
         // Calculate current stock
-        // Use nullish coalescing to handle null values from database
         const stokAwal = Number(dailyInventory.stokAwal ?? 0);
         const barangMasuk = Number(dailyInventory.barangMasuk ?? 0);
         const dipesan = Number(dailyInventory.dipesan ?? 0);
@@ -461,28 +466,23 @@ export class InventoryTransactionService extends BaseResponse {
         }
 
         // Update daily inventory: increment dipesan
-        // ✅ FIX: Ensure proper number conversion to avoid string concatenation
         const quantityToAdd = Number(dto.quantity) || 0;
         dailyInventory.dipesan = dipesan + quantityToAdd;
         dailyInventory.updatedBy = userId;
 
-        // Log for debugging
         this.logger.log(
           `[RECORD SALE - Attempt ${attempt}] Product ${dto.productCodeId}: dipesan ${dipesan} + ${quantityToAdd} = ${dailyInventory.dipesan}`,
         );
 
-        await queryRunner.manager.save(DailyInventory, dailyInventory);
+        // ✅ USE MANAGER
+        await manager.save(DailyInventory, dailyInventory);
 
-        // ✅ FIX: Re-fetch entity to get the updated stokAkhir (GENERATED COLUMN)
-        // stokAkhir is auto-calculated by database, so we need to reload it
-        const refreshedInventory = await queryRunner.manager.findOne(
-          DailyInventory,
-          {
-            where: {
-              id: dailyInventory.id,
-            },
+        // ✅ FIX: Re-fetch entity to get the updated stokAkhir
+        const refreshedInventory = await manager.findOne(DailyInventory, {
+          where: {
+            id: dailyInventory.id,
           },
-        );
+        });
 
         // Calculate balance after using the GENERATED stokAkhir
         const balanceAfter = Number(refreshedInventory?.stokAkhir ?? 0);
@@ -494,8 +494,9 @@ export class InventoryTransactionService extends BaseResponse {
         }
 
         // Generate transaction number
+        // Pastikan helper ini menggunakan manager/queryRunner yang benar
         const transactionNumber = await this.generateTransactionNumber(
-          queryRunner,
+          manager.queryRunner || queryRunner,
           'TRX',
         );
 
@@ -507,12 +508,10 @@ export class InventoryTransactionService extends BaseResponse {
         const transaction = new InventoryTransactions();
         transaction.transactionNumber = transactionNumber;
         transaction.transactionDate = new Date();
-        transaction.businessDate = businessDate; // ✅ Use invoice date as business date
+        transaction.businessDate = businessDate;
         transaction.transactionType = TransactionType.SALE;
         transaction.productCodeId = dto.productCodeId;
         transaction.quantity = dto.quantity;
-
-        // ✅ Ensure balanceAfter is always a valid number
         transaction.balanceAfter = Number.isFinite(balanceAfter)
           ? balanceAfter
           : 0;
@@ -526,66 +525,63 @@ export class InventoryTransactionService extends BaseResponse {
           `Sale${dto.customerName ? ` to ${dto.customerName}` : ''}`;
         transaction.createdBy = userId;
 
-        const savedTransaction = await queryRunner.manager.save(transaction);
+        // ✅ USE MANAGER
+        const savedTransaction = await manager.save(transaction);
 
         // Reload inventory
-        const updatedInventory = await queryRunner.manager.findOne(
-          DailyInventory,
-          {
-            where: { id: dailyInventory.id },
-            relations: ['productCode', 'productCode.product'],
-          },
-        );
+        const updatedInventory = await manager.findOne(DailyInventory, {
+          where: { id: dailyInventory.id },
+          relations: ['productCode', 'productCode.product'],
+        });
 
-        await queryRunner.commitTransaction();
+        // ✅ ONLY COMMIT IF LOCAL TRANSACTION
+        if (!isExternalTransaction && queryRunner) {
+          await queryRunner.commitTransaction();
+        }
 
         this.logger.log(
           `Sale recorded: Product ${dto.productCodeId}, Qty ${dto.quantity}${dto.orderId ? `, Order ${dto.orderId}` : ''}, TRX: ${transactionNumber}`,
         );
 
-        // ✅ Emit SALE notification (MEDIUM priority - informational)
-        await this.notificationEventEmitter.emitSale({
-          transactionId: savedTransaction.id,
-          productCode: updatedInventory?.productCode?.productCode || 'Unknown',
-          productName:
-            updatedInventory?.productCode?.product?.name || 'Unknown Product',
-          quantity: dto.quantity,
-          orderNumber: dto.orderId ? dto.orderId.toString() : 'N/A',
-        });
+        // (Rollback) Tidak ada push notifikasi SALE pada proses pembuatan pesanan.
 
         return this._success('Sale recorded successfully', {
           dailyInventory: updatedInventory,
           transaction: savedTransaction,
         });
       } catch (error) {
-        await queryRunner.rollbackTransaction();
+        // ✅ ONLY ROLLBACK IF LOCAL TRANSACTION
+        if (!isExternalTransaction && queryRunner) {
+          await queryRunner.rollbackTransaction();
 
-        // Check if it's a duplicate key error
-        const isDuplicateError =
-          error.code === 'ER_DUP_ENTRY' ||
-          error.message?.includes('Duplicate entry');
+          // Check if it's a duplicate key error (RETRY ONLY FOR LOCAL)
+          const isDuplicateError =
+            error.code === 'ER_DUP_ENTRY' ||
+            error.message?.includes('Duplicate entry');
 
-        if (isDuplicateError && attempt < maxRetries) {
-          this.logger.warn(
-            `Duplicate transaction number detected on attempt ${attempt}, retrying...`,
-          );
-          lastError = error;
-          // Add small random delay to reduce collision probability
-          await new Promise((resolve) =>
-            setTimeout(resolve, 50 + Math.random() * 100),
-          );
-          continue; // Retry
+          if (isDuplicateError && attempt < maxRetries) {
+            this.logger.warn(
+              `Duplicate transaction number detected on attempt ${attempt}, retrying...`,
+            );
+            lastError = error;
+            await new Promise((resolve) =>
+              setTimeout(resolve, 50 + Math.random() * 100),
+            );
+            continue; // Retry
+          }
         }
 
-        // If not duplicate or max retries reached, throw error
         this.logger.error('Failed to record sale', error);
         throw error;
       } finally {
-        await queryRunner.release();
+        // ✅ ONLY RELEASE IF LOCAL TRANSACTION
+        if (!isExternalTransaction && queryRunner) {
+          await queryRunner.release();
+        }
       }
     }
 
-    // If all retries failed
+    // If all retries failed (only reachable for local transactions)
     this.logger.error(
       `Failed to record sale after ${maxRetries} attempts`,
       lastError,
@@ -2034,15 +2030,7 @@ export class InventoryTransactionService extends BaseResponse {
           `After: ${actualStockAfter} | Reason: ${reason}`,
       );
 
-      // ✅ Emit ADJUSTMENT notification (HIGH priority - significant stock change)
-      await this.notificationEventEmitter.emitAdjustment({
-        transactionId: transaction.id,
-        productCode: product.productCode,
-        productName: product.product.name,
-        oldQuantity: stockBefore,
-        newQuantity: actualStockAfter,
-        reason: reason,
-      });
+
 
       return this._success('Stock adjustment completed successfully', {
         transactionNumber,

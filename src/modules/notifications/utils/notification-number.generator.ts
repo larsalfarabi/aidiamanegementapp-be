@@ -7,11 +7,14 @@ export class NotificationNumberGenerator {
   /**
    * Generate notification number based on date and sequence
    */
-  static generate(date: Date, sequence: number): string {
+  static generate(date: Date, sequence: number, attempt: number = 0): string {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
-    const seq = String(sequence).padStart(3, '0');
+
+    // ✅ Logic Attempt: Tambahkan attempt ke sequence agar nomor berbeda saat retry
+    const effectiveSequence = sequence + attempt;
+    const seq = String(effectiveSequence).padStart(3, '0');
 
     return `NOTIF-${year}${month}${day}-${seq}`;
   }

@@ -33,7 +33,7 @@ import { Orders } from '../orders/entity/orders.entity';
 import * as ExcelJS from 'exceljs';
 import { Users } from '../users/entities/users.entity';
 import { ProductCodes } from '../products/entity/product_codes.entity';
-import { NotificationEventEmitter } from '../notifications/services/notification-event-emitter.service';
+
 
 @Injectable()
 export class CustomersService extends BaseResponse {
@@ -47,7 +47,7 @@ export class CustomersService extends BaseResponse {
     @InjectRepository(ProductCodes)
     private readonly productCodesRepo: Repository<ProductCodes>,
     private readonly dataSource: DataSource,
-    private readonly notificationEventEmitter: NotificationEventEmitter,
+
   ) {
     super();
   }
@@ -148,12 +148,7 @@ export class CustomersService extends BaseResponse {
     });
     const result = await this.customersRepo.save(customer);
 
-    // Emit notification
-    await this.notificationEventEmitter.emitCustomerCreated({
-      customerId: result.id,
-      customerCode: result.customerCode,
-      customerName: result.customerName,
-    });
+    // [ROLLED BACK] Emit notification disabled
 
     return this._success('Data pelanggan berhasil dibuat', result);
   }
@@ -172,14 +167,7 @@ export class CustomersService extends BaseResponse {
       where: { id },
     });
 
-    // Emit notification
-    if (updatedCustomer) {
-      await this.notificationEventEmitter.emitCustomerUpdated({
-        customerId: updatedCustomer.id,
-        customerCode: updatedCustomer.customerCode,
-        customerName: updatedCustomer.customerName,
-      });
-    }
+    // [ROLLED BACK] Emit notification disabled
 
     return this._success(
       `Data pelanggan dengan ID ${id} berhasil diupdate`,
@@ -295,12 +283,7 @@ export class CustomersService extends BaseResponse {
     if (result.affected === 0)
       throw new NotFoundException('Data pelanggan tidak ditemukan');
 
-    // Emit notification
-    await this.notificationEventEmitter.emitCustomerDeleted({
-      customerId: customer.id,
-      customerCode: customer.customerCode,
-      customerName: customer.customerName,
-    });
+    // [ROLLED BACK] Emit notification disabled
 
     return this._success(`Data pelanggan dengan ID ${id} berhasil dihapus`);
   }

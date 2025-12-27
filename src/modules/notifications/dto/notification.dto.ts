@@ -36,7 +36,7 @@ export class CreateNotificationDto {
 
   @IsString()
   @IsOptional()
-  requiredPermission: string | null = null;
+  requiredPermission?: string;
 
   @IsString()
   eventType: string;

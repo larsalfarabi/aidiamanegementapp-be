@@ -6,7 +6,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, Between } from 'typeorm';
+import { Repository, DataSource, Between, In } from 'typeorm';
 import BaseResponse from '../../../common/response/base.response';
 import {
   ProductionBatches,
@@ -31,6 +31,7 @@ import { InventoryLegacyService } from '../../inventory/services/inventory-legac
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { NotificationEventEmitter } from '../../notifications/services/notification-event-emitter.service';
 
+
 @Injectable()
 export class ProductionBatchService extends BaseResponse {
   private readonly logger = new Logger(ProductionBatchService.name);
@@ -52,6 +53,7 @@ export class ProductionBatchService extends BaseResponse {
     private readonly productionFormulaService: ProductionFormulaService,
     private readonly inventoryService: InventoryLegacyService,
     private readonly notificationEventEmitter: NotificationEventEmitter,
+
   ) {
     super();
   }
@@ -121,91 +123,98 @@ export class ProductionBatchService extends BaseResponse {
   async checkMaterialStock(dto: CheckMaterialStockDto) {
     try {
       const productionDate = new Date(dto.productionDate);
+      const today = new Date();
+      const businessDate = today.toISOString().split('T')[0];
 
-      // Fetch material details
-      const materialDetails = await Promise.all(
-        dto.materials.map(async (material) => {
-          // Fetch ProductCode with all relations, regardless of isDeleted/isActive status
-          const productCode = await this.productCodeRepository
-            .createQueryBuilder('pc')
-            .leftJoinAndSelect('pc.product', 'product')
-            .leftJoinAndSelect('product.category', 'productCategory')
-            .leftJoinAndSelect('pc.size', 'size')
-            .leftJoinAndSelect('pc.category', 'mainCategory')
-            .where('pc.id = :id', { id: material.materialProductCodeId })
-            .getOne();
+      // 1. Collect all material IDs
+      const materialIds = dto.materials.map((m) => m.materialProductCodeId);
 
-          // ProductCode tidak ditemukan sama sekali
-          if (!productCode) {
-            throw new NotFoundException(
-              `Material dengan ProductCode ID ${material.materialProductCodeId} tidak ditemukan. Formula mungkin menggunakan material yang telah dihapus dari database.`,
-            );
-          }
+      // 2. Batch Fetch ProductCodes (Single Query)
+      const productCodes = await this.productCodeRepository.find({
+        where: { id: In(materialIds) },
+        relations: ['product', 'product.category', 'size', 'category'],
+      });
 
-          // ProductCode ditemukan tapi sudah dihapus atau dinonaktifkan
-          if (productCode.isDeleted || !productCode.isActive) {
-            const status = productCode.isDeleted ? 'dihapus' : 'dinonaktifkan';
-            throw new NotFoundException(
-              `Material "${productCode.productCode}" telah ${status}. Silakan update formula atau aktifkan kembali material ini untuk melanjutkan produksi.`,
-            );
-          }
+      // Map for O(1) access
+      const productCodeMap = new Map(productCodes.map((pc) => [pc.id, pc]));
 
-          // Get current stock from daily inventory
-          const today = new Date();
-          const businessDate = today.toISOString().split('T')[0];
+      // 3. Batch Fetch DailyInventory (Single Query)
+      const dailyInventories = await this.dataSource
+        .getRepository('DailyInventory')
+        .find({
+          where: {
+            productCodeId: In(materialIds),
+            businessDate: businessDate as any,
+          },
+        });
 
-          const dailyInventory = await this.dataSource
-            .getRepository('DailyInventory')
-            .findOne({
-              where: {
-                productCodeId: material.materialProductCodeId,
-                businessDate: businessDate as any,
-              },
-            });
-
-          const availableStock = Number(dailyInventory?.stokAkhir || 0);
-          const reservedStock = 0; // Reserved stock not implemented yet
-          const actualAvailable = Math.max(0, availableStock - reservedStock);
-          const shortage = Math.max(
-            0,
-            material.plannedQuantity - actualAvailable,
-          );
-
-          // Determine stock status
-          let stockStatus = 'SUFFICIENT';
-          let isValid = true;
-
-          if (actualAvailable === 0) {
-            stockStatus = 'OUT_OF_STOCK';
-            isValid = false;
-          } else if (actualAvailable < material.plannedQuantity) {
-            stockStatus = 'INSUFFICIENT';
-            isValid = false;
-          }
-          // LOW_STOCK check disabled for now (minimum stock not in daily inventory)
-
-          const unit = productCode.size?.sizeValue || 'KG';
-
-          return {
-            materialProductCodeId: material.materialProductCodeId,
-            materialCode: productCode.productCode,
-            materialName: productCode.product.name,
-            category: productCode.product.category?.name || 'Unknown',
-            unit: unit,
-            requestedQuantity: material.plannedQuantity,
-            availableStock,
-            reservedStock,
-            actualAvailable,
-            minimumStock: 0, // Not implemented yet
-            stockStatus,
-            isValid,
-            shortage,
-            message: isValid
-              ? 'Stock tersedia'
-              : `Kurang ${shortage.toFixed(3)} ${unit}`,
-          };
-        }),
+      // Map for O(1) access (Key: productCodeId)
+      const inventoryMap = new Map(
+        dailyInventories.map((inv: any) => [inv.productCodeId, inv]),
       );
+
+      // 4. Process loop in memory
+      const materialDetails = dto.materials.map((material) => {
+        const productCode = productCodeMap.get(material.materialProductCodeId);
+
+        // ProductCode tidak ditemukan
+        if (!productCode) {
+          throw new NotFoundException(
+            `Material dengan ProductCode ID ${material.materialProductCodeId} tidak ditemukan. Formula mungkin menggunakan material yang telah dihapus dari database.`,
+          );
+        }
+
+        // ProductCode dihapus/inaktif
+        if (productCode.isDeleted || !productCode.isActive) {
+          const status = productCode.isDeleted ? 'dihapus' : 'dinonaktifkan';
+          throw new NotFoundException(
+            `Material "${productCode.productCode}" telah ${status}. Silakan update formula atau aktifkan kembali material ini untuk melanjutkan produksi.`,
+          );
+        }
+
+        // Get stock from map
+        const dailyInventory = inventoryMap.get(material.materialProductCodeId);
+        const availableStock = Number(dailyInventory?.stokAkhir || 0);
+        const reservedStock = 0;
+        const actualAvailable = Math.max(0, availableStock - reservedStock);
+        const shortage = Math.max(
+          0,
+          material.plannedQuantity - actualAvailable,
+        );
+
+        // Determine stock status
+        let stockStatus = 'SUFFICIENT';
+        let isValid = true;
+
+        if (actualAvailable === 0) {
+          stockStatus = 'OUT_OF_STOCK';
+          isValid = false;
+        } else if (actualAvailable < material.plannedQuantity) {
+          stockStatus = 'INSUFFICIENT';
+          isValid = false;
+        }
+
+        const unit = productCode.size?.sizeValue || 'KG';
+
+        return {
+          materialProductCodeId: material.materialProductCodeId,
+          materialCode: productCode.productCode,
+          materialName: productCode.product.name,
+          category: productCode.product.category?.name || 'Unknown',
+          unit: unit,
+          requestedQuantity: material.plannedQuantity,
+          availableStock,
+          reservedStock,
+          actualAvailable,
+          minimumStock: 0, // Not implemented yet
+          stockStatus,
+          isValid,
+          shortage,
+          message: isValid
+            ? 'Stock tersedia'
+            : `Kurang ${shortage.toFixed(3)} ${unit}`,
+        };
+      });
 
       // Calculate summary
       const summary = {
@@ -345,19 +354,7 @@ export class ProductionBatchService extends BaseResponse {
           )
           .join('; ');
 
-        // ✅ Emit MATERIAL_SHORTAGE notification (CRITICAL - blocks production)
-        await this.notificationEventEmitter.emitMaterialShortage({
-          batchId: 0, // Not created yet
-          batchNumber: 'N/A',
-          insufficientMaterials: stockAvailability.insufficientMaterials.map(
-            (m) => ({
-              materialName: m.productName,
-              required: m.required,
-              available: m.available,
-              shortage: m.shortage,
-            }),
-          ),
-        });
+        // [ROLLED BACK] Emit notification disabled
 
         throw new BadRequestException(
           `Stock material tidak mencukupi untuk batch ini. Detail: ${shortageDetails}`,
@@ -482,12 +479,11 @@ export class ProductionBatchService extends BaseResponse {
       );
 
       // ✅ Emit BATCH_CREATED notification
-      await this.notificationEventEmitter.emitBatchCreated({
+      this.notificationEventEmitter.emitBatchCreated({
         batchId: savedBatch.id,
-        batchNumber: savedBatch.batchNumber,
-        productName:
-          completeBatch?.productCode?.product?.name || 'Unknown Product',
-        targetLiters: dto.targetLiters,
+        batchNumber: batchNumber,
+        productName: formula.product.name,
+        plannedQuantity: dto.targetLiters,
       });
 
       return this._success(
@@ -732,12 +728,7 @@ export class ProductionBatchService extends BaseResponse {
         batch.status = BatchStatus.QC_PENDING;
 
         // ✅ Emit QC_PENDING notification (batch ready for quality control)
-        await this.notificationEventEmitter.emitQCPending({
-          batchId: batch.id,
-          batchNumber: batch.batchNumber,
-          productName: batch.productCode?.product?.name || 'Unknown Product',
-          plannedQuantity: dto.outputQuantity,
-        });
+        // [ROLLED BACK] Emit notification disabled
       }
 
       if (dto.stage === ProductionStage.QC) {
@@ -801,12 +792,7 @@ export class ProductionBatchService extends BaseResponse {
           );
 
           // ✅ Emit QC_FAILED notification (CRITICAL - batch rejected)
-          await this.notificationEventEmitter.emitQCFailed({
-            batchId: batch.id,
-            batchNumber: batch.batchNumber,
-            productName: batch.productCode?.product?.name || 'Unknown Product',
-            qcNotes: batch.qcNotes || 'No notes provided',
-          });
+          // [ROLLED BACK] Emit notification disabled
         }
 
         // ✅ Emit QC_PASSED notification for successful QC (PASS or PARTIAL)
@@ -814,12 +800,7 @@ export class ProductionBatchService extends BaseResponse {
           batch.qcStatus === QCStatus.PASS ||
           batch.qcStatus === QCStatus.PARTIAL
         ) {
-          await this.notificationEventEmitter.emitQCPassed({
-            batchId: batch.id,
-            batchNumber: batch.batchNumber,
-            productName: batch.productCode?.product?.name || 'Unknown Product',
-            qcNotes: batch.qcNotes || 'QC Passed',
-          });
+          // [ROLLED BACK] Emit notification disabled
         }
 
         // Calculate yield and waste
@@ -1029,11 +1010,7 @@ export class ProductionBatchService extends BaseResponse {
       );
 
       // ✅ Emit BATCH_CANCELLED notification
-      await this.notificationEventEmitter.emitBatchCancelled({
-        batchId: batch.id,
-        batchNumber: batch.batchNumber,
-        cancellationReason: reason,
-      });
+      // [ROLLED BACK] Emit notification disabled
 
       return this._success('Batch cancelled successfully', batch);
     } catch (error) {
@@ -1314,12 +1291,12 @@ export class ProductionBatchService extends BaseResponse {
 
       // ✅ Emit BATCH_COMPLETED notification (only if NOT draft)
       if (!dto.isDraft) {
-        await this.notificationEventEmitter.emitBatchCompleted({
+        this.notificationEventEmitter.emitBatchCompleted({
           batchId: batch.id,
           batchNumber: batch.batchNumber,
-          productName: batch.product?.name || 'Unknown Product',
+          productName: batch.product.name,
           actualQuantity: totalGoodQuantity,
-          qcPassedQuantity: totalGoodQuantity, // In new system, all output is QC passed
+          qcPassedQuantity: totalGoodQuantity, // Assuming all good qty is passed, effectively skipping QC stage detail in this simplified flow
         });
       }
 

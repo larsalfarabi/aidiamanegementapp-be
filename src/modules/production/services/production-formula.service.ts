@@ -13,6 +13,8 @@ import { Products } from '../../products/entity/products.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { ProductCategories } from '../../products/entity/product_categories.entity';
 import { CreateFormulaDto, UpdateFormulaDto, FilterFormulaDto } from '../dto';
+import { RedisService } from '../../redis/redis.service';
+import { ResponsePagination } from '../../../common/interface/response.interface';
 
 @Injectable()
 export class ProductionFormulaService extends BaseResponse {
@@ -29,6 +31,7 @@ export class ProductionFormulaService extends BaseResponse {
     private readonly productCodeRepository: Repository<ProductCodes>,
     @InjectRepository(ProductCategories)
     private readonly categoryRepository: Repository<ProductCategories>,
+    private readonly redisService: RedisService,
     private readonly dataSource: DataSource,
   ) {
     super();
@@ -250,6 +253,17 @@ export class ProductionFormulaService extends BaseResponse {
         search,
       } = filterDto;
 
+      // Cache Strategy
+      const cacheKey = `formulas:list:${JSON.stringify(filterDto)}`;
+      const cachedData = await this.redisService.get<ResponsePagination>(cacheKey);
+
+      if (cachedData) {
+        return {
+          ...cachedData,
+          message: cachedData.message + ' (from cache)',
+        };
+      }
+
       const queryBuilder = this.formulaRepository
         .createQueryBuilder('formula')
         .leftJoinAndSelect('formula.product', 'product')
@@ -298,13 +312,18 @@ export class ProductionFormulaService extends BaseResponse {
         .take(pageSize)
         .getManyAndCount();
 
-      return this._pagination(
+      const response = this._pagination(
         'Formulas retrieved successfully',
         formulas,
         total,
         page!,
         pageSize!,
       );
+
+      // Cache for 5 minutes
+      await this.redisService.set(cacheKey, response, 300);
+
+      return response;
     } catch (error) {
       this.logger.error('Failed to get formulas', error.stack);
       throw error;

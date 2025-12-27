@@ -24,9 +24,12 @@ import {
 import { NotificationNumberGenerator } from './utils/notification-number.generator';
 import { Users } from '../users/entities/users.entity';
 import { NotificationsGateway } from './notifications.gateway';
+import { Logger } from '@nestjs/common';
 
 @Injectable()
 export class NotificationsService extends BaseResponse {
+  private readonly logger = new Logger(NotificationsService.name);
+
   constructor(
     @InjectRepository(Notification)
     private notificationRepo: Repository<Notification>,
@@ -44,60 +47,117 @@ export class NotificationsService extends BaseResponse {
    * Create a new notification and auto-assign to eligible users (PBAC-filtered)
    */
   async create(dto: CreateNotificationDto): Promise<ResponseSuccess> {
-    // Generate notification number
-    const lastNotification = await this.notificationRepo
-      .createQueryBuilder('notification')
-      .orderBy('notification.createdAt', 'DESC')
-      .getOne();
+    const maxRetries = 3;
+    let savedNotification: Notification | null = null;
+    let lastError: any;
 
-    const sequence = await NotificationNumberGenerator.getNextSequence(
-      lastNotification?.notificationNumber || null,
-    );
-    const notificationNumber = NotificationNumberGenerator.generate(
-      new Date(),
-      sequence,
-    );
+    // Retry loop untuk menangani race condition pada nomor notifikasi
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        // 1. Ambil notifikasi terakhir untuk sequence number
+        const [lastNotification] = await this.notificationRepo.find({
+          order: { createdAt: 'DESC' },
+          take: 1,
+        });
 
-    // Set default expiration (30 days for LOW/MEDIUM, 90 days for HIGH/CRITICAL)
-    let expiresAt = null;
-    if (
-      dto.priority === NotificationPriority.LOW ||
-      dto.priority === NotificationPriority.MEDIUM
-    ) {
-      expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 30);
-    } else {
-      expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 90);
+        const sequence = NotificationNumberGenerator.getNextSequence(
+          lastNotification?.notificationNumber || null,
+        );
+
+        // 2. Generate nomor notifikasi (tambahkan 'attempt' sebagai offset jika retry)
+        const notificationNumber = NotificationNumberGenerator.generate(
+          new Date(),
+          await sequence,
+          attempt,
+        );
+
+        // 3. Set default expiration jika tidak disediakan
+        let expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
+
+        if (!expiresAt) {
+          expiresAt = new Date();
+          if (
+            dto.priority === NotificationPriority.LOW ||
+            dto.priority === NotificationPriority.MEDIUM
+          ) {
+            expiresAt.setDate(expiresAt.getDate() + 30); // 30 hari untuk Low/Medium
+          } else {
+            expiresAt.setDate(expiresAt.getDate() + 90); // 90 hari untuk High/Critical
+          }
+        }
+
+        // 4. Create & Save Notification
+        const notification = this.notificationRepo.create({
+          ...dto,
+          notificationNumber,
+          expiresAt,
+        });
+
+        savedNotification = await this.notificationRepo.save(notification);
+
+        // Jika berhasil disimpan, keluar dari loop
+        break;
+      } catch (error) {
+        lastError = error;
+        // Cek error duplicate entry (MySQL: ER_DUP_ENTRY / code 1062)
+        const isDuplicate =
+          error.code === 'ER_DUP_ENTRY' ||
+          error.message?.includes('Duplicate entry');
+
+        if (isDuplicate && attempt < maxRetries - 1) {
+          this.logger.warn(
+            `Duplicate notification number detected on attempt ${attempt + 1}, retrying...`,
+          );
+          // Tunggu sebentar sebelum retry random 50-150ms
+          await new Promise((resolve) =>
+            setTimeout(resolve, 50 + Math.random() * 100),
+          );
+          continue;
+        }
+
+        // Jika bukan duplicate atau max retry tercapai, lempar error
+        this.logger.error('Failed to create notification', error);
+        throw error;
+      }
     }
 
-    // Create notification
-    const notification = this.notificationRepo.create({
-      ...dto,
-      notificationNumber,
-      expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : expiresAt,
-    });
+    if (!savedNotification) {
+      throw new Error(
+        `Failed to create notification after ${maxRetries} attempts: ${lastError?.message}`,
+      );
+    }
 
-    const savedNotification = await this.notificationRepo.save(notification);
-
+    // 5. Distribusi ke User (Notification Reads & WebSocket)
     // Get eligible users based on permission
-    const eligibleUsers = await this.getEligibleUsers(dto.requiredPermission);
-
-    // Create notification_reads records for each eligible user
-    const notificationReads = eligibleUsers.map((user) =>
-      this.notificationReadRepo.create({
-        notificationId: savedNotification.id,
-        userId: user.id,
-      }),
+    const eligibleUsers = await this.getEligibleUsers(
+      dto.requiredPermission || undefined,
     );
 
-    await this.notificationReadRepo.save(notificationReads);
+    if (eligibleUsers.length > 0) {
+      // Create notification_reads records
+      const notificationReads = eligibleUsers.map((user) =>
+        this.notificationReadRepo.create({
+          notificationId: savedNotification!.id,
+          userId: user.id,
+          isRead: false,
+        }),
+      );
 
-    // Emit to WebSocket for real-time delivery
-    await this.notificationsGateway.notifyMultipleUsers(
-      eligibleUsers.map((u) => u.id),
-      savedNotification,
-    );
+      await this.notificationReadRepo.save(notificationReads);
+
+      // Emit to WebSocket for real-time delivery
+      try {
+        await this.notificationsGateway.notifyMultipleUsers(
+          eligibleUsers.map((u) => u.id),
+          savedNotification,
+        );
+      } catch (wsError) {
+        this.logger.warn(
+          `Failed to emit websocket notification: ${wsError.message}`,
+        );
+        // Jangan throw error, karena notifikasi DB sudah tersimpan
+      }
+    }
 
     return this._success('Notification created successfully', {
       notification: savedNotification,
