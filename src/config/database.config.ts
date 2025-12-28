@@ -10,7 +10,7 @@ export const typeOrmConfig: TypeOrmModuleOptions = {
   database: process.env.DB_DATABASE,
   entities: [__dirname + '/../modules/**/*.entity{.ts,.js}'],
   synchronize: false,
-  logging: true,
+  logging: process.env.APP_ENV === 'production' ? ['error', 'warn', 'migration'] : true,
   extra: {
     connectionLimit: 20, // Connection Pooling (Optimized)
   },
