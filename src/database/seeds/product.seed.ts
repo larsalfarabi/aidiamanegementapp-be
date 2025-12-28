@@ -152,13 +152,6 @@ export class ProductSeeder {
         categoryType: 'BARANG_JADI',
       },
       {
-        sizeValue: '330 ML',
-        unitOfMeasure: 'ML',
-        baseValue: 330,
-        baseUnit: 'ML',
-        categoryType: 'BARANG_JADI',
-      },
-      {
         sizeValue: '1 LITER',
         unitOfMeasure: 'LITER',
         baseValue: 1,
