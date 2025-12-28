@@ -8,8 +8,8 @@ export const typeOrmConfig: TypeOrmModuleOptions = {
   username: process.env.DB_USERNAME,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_DATABASE,
-  entities: ['dist/**/*.entity{.ts,.js}'],
-  synchronize: true,
+  entities: [__dirname + '/../modules/**/*.entity{.ts,.js}'],
+  synchronize: false,
   logging: true,
   extra: {
     connectionLimit: 20, // Connection Pooling (Optimized)

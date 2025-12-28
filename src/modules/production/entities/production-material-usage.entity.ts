@@ -1,6 +1,6 @@
 import { Entity, Column, ManyToOne, JoinColumn, Index } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
-import type { ProductionBatches } from './production-batches.entity'; // Changed to TYPE import to fix circular dependency
+import type { ProductionBatches } from './production-batches.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { Users } from '../../users/entities/users.entity';
 

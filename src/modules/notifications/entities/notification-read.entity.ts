@@ -9,7 +9,7 @@ import {
   ManyToOne,
   JoinColumn,
 } from 'typeorm';
-import { Notification } from './notification.entity';
+import type { Notification } from './notification.entity';
 import { Users } from '../../users/entities/users.entity';
 
 /**
@@ -41,7 +41,7 @@ export class NotificationRead {
   })
   notificationId: number;
 
-  @ManyToOne(() => Notification, (notification) => notification.reads, {
+  @ManyToOne("Notification", (notification: any) => notification.reads, {
     onDelete: 'CASCADE',
     eager: true,
   })

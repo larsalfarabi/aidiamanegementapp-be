@@ -1,6 +1,6 @@
 import { Entity, Column, ManyToOne, JoinColumn, Index } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
-import { ProductionBatches } from './production-batches.entity';
+import type { ProductionBatches } from './production-batches.entity';
 import { Users } from '../../users/entities/users.entity';
 
 /**
@@ -61,7 +61,7 @@ export class ProductionStageTracking extends BaseEntity {
   })
   batchId: number;
 
-  @ManyToOne(() => ProductionBatches, (batch) => batch.stages, {
+  @ManyToOne("ProductionBatches", (batch: any) => batch.stages, {
     onDelete: 'CASCADE',
   })
   @JoinColumn({ name: 'batchId' })

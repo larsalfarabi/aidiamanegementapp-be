@@ -1,12 +1,12 @@
 import { BaseEntity } from '../../../common/entities/base.entity';
 import { Entity, Column, ManyToOne, JoinColumn } from 'typeorm';
-import { Orders } from './orders.entity';
+import type { Orders } from './orders.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { CustomerProductCatalogs } from '../../customers/entity/customer_product_catalog.entity';
 
 @Entity({ synchronize: true })
 export class OrderItems extends BaseEntity {
-  @ManyToOne(() => Orders, (order) => order.orderItems, { onDelete: 'CASCADE' })
+  @ManyToOne("Orders", (order: any) => order.orderItems, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'orderId' })
   order: Orders;
 

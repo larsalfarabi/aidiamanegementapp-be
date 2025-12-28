@@ -1,7 +1,7 @@
 import { BaseEntity } from '../../../common/entities/base.entity';
 import { Entity, Column, ManyToOne, JoinColumn } from 'typeorm';
 import { Users } from '../../users/entities/users.entity';
-import { Customers } from './customers.entity';
+import type { Customers } from './customers.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 
 @Entity({ synchronize: true })
@@ -12,7 +12,7 @@ export class CustomerProductCatalogs extends BaseEntity {
   @Column()
   productCodeId: number;
 
-  @ManyToOne(() => Customers, (customer) => customer.customerProductCatalog)
+  @ManyToOne("Customers", (customer: any) => customer.customerProductCatalog)
   @JoinColumn({ name: 'customerId' })
   customer: Customers;
 

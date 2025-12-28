@@ -7,7 +7,7 @@ import {
   OneToMany,
 } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
-import { ProductionFormulas } from './production-formulas.entity';
+import type { ProductionFormulas } from './production-formulas.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { Products } from '../../products/entity/products.entity';
 import { Users } from '../../users/entities/users.entity';
@@ -102,7 +102,7 @@ export class ProductionBatches extends BaseEntity {
   })
   formulaId: number;
 
-  @ManyToOne(() => ProductionFormulas, (formula) => formula.batches, {
+  @ManyToOne("ProductionFormulas", (formula: any) => formula.batches, {
     eager: true,
   })
   @JoinColumn({ name: 'formulaId' })

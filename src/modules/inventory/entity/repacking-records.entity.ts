@@ -12,7 +12,7 @@ import {
 } from 'typeorm';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { Users } from '../../users/entities/users.entity';
-import { InventoryTransactions } from './inventory-transactions.entity';
+import type { InventoryTransactions } from './inventory-transactions.entity';
 import { BaseEntity } from '../../../common/entities/base.entity';
 
 /**
@@ -177,7 +177,7 @@ export class RepackingRecords extends BaseEntity {
   })
   sourceTransactionId: number;
 
-  @OneToOne(() => InventoryTransactions, { nullable: true })
+  @OneToOne("InventoryTransactions", { nullable: true })
   @JoinColumn({ name: 'sourceTransactionId' })
   sourceTransaction: InventoryTransactions;
 
@@ -188,7 +188,7 @@ export class RepackingRecords extends BaseEntity {
   })
   targetTransactionId: number;
 
-  @OneToOne(() => InventoryTransactions, { nullable: true })
+  @OneToOne("InventoryTransactions", { nullable: true })
   @JoinColumn({ name: 'targetTransactionId' })
   targetTransaction: InventoryTransactions;
 
