@@ -374,3 +374,25 @@ export class BulkUpdateProductCodesDto {
   @Type(() => UpdateProductCodeDto)
   productCodes: (UpdateProductCodeDto & { id: number })[];
 }
+
+// ================== EXCEL UPLOAD DTOs ==================
+
+export class ExcelProductUploadError {
+  row: number;
+  productName: string;
+  errors: string[];
+}
+
+export class ExcelProductUploadSuccess {
+  row: number;
+  productName: string;
+  productCode: string;
+}
+
+export class ExcelProductUploadResult {
+  totalRows: number;
+  successCount: number;
+  failedCount: number;
+  errors: ExcelProductUploadError[];
+  successDetails: ExcelProductUploadSuccess[];
+}

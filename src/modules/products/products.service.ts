@@ -21,9 +21,12 @@ import { RedisService } from '../redis/redis.service';
 import { Pagination } from '../../common/decorator/pagination.decorator';
 import { Products } from './entity/products.entity';
 import { ProductSizes } from './entity/product_sizes.entity';
-import { ProductCategories } from './entity/product_categories.entity';
+import {
+  ProductCategories,
+  CategoryType,
+} from './entity/product_categories.entity';
 import { ProductCodeQueryDto, QueryProductDto } from './dto/products.dto';
-
+import * as ExcelJS from 'exceljs';
 
 @Injectable()
 export class ProductsService extends BaseResponse {
@@ -44,11 +47,13 @@ export class ProductsService extends BaseResponse {
 
   // * --- PRODUCT CODES --- */
   async findAll(query: ProductCodeQueryDto): Promise<ResponsePagination> {
-    const { pageSize, limit, page, mainCategory, subCategoryId, size } = query;
+    const { pageSize, limit, page, mainCategory, subCategoryId, size, search } =
+      query;
 
     // Cache Strategy
     const cacheKey = `products:codes:list:${JSON.stringify(query)}`;
-    const cachedData = await this.redisService.get<ResponsePagination>(cacheKey);
+    const cachedData =
+      await this.redisService.get<ResponsePagination>(cacheKey);
 
     if (cachedData) {
       return {
@@ -100,6 +105,15 @@ export class ProductsService extends BaseResponse {
       queryBuilder.andWhere('productSizes.id = :size', {
         size: size,
       });
+    }
+
+    // ✅ NEW: Add search filter for productCode, product name, or category
+    if (search && search.trim()) {
+      const searchTerm = `%${search.trim()}%`;
+      queryBuilder.andWhere(
+        '(pc.productCode LIKE :search OR products.name LIKE :search OR mainCategory.name LIKE :search)',
+        { search: searchTerm },
+      );
     }
 
     const [result, count] = await queryBuilder.getManyAndCount();
@@ -684,5 +698,548 @@ export class ProductsService extends BaseResponse {
       page!,
       pageSize!,
     );
+  }
+
+  /**
+   * Generate Excel template for Product Code upload
+   */
+  async generateExcelTemplate(category?: string): Promise<Buffer> {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Template Upload Product');
+
+    // Context-Aware Columns
+    const isBarangJadi = category?.toUpperCase() === 'BARANG JADI';
+    const isOther = category && !isBarangJadi;
+
+    if (isBarangJadi) {
+      // Columns for Barang Jadi
+      worksheet.columns = [
+        { header: 'Kode Produk', key: 'productCode', width: 30 },
+        { header: 'Nama Produk', key: 'productName', width: 35 },
+        { header: 'Sub Kategori', key: 'subCategory', width: 25 },
+        { header: 'Tipe Produk', key: 'productType', width: 20 },
+        { header: 'Ukuran Produk', key: 'sizeValue', width: 20 },
+      ];
+    } else if (isOther) {
+      // Columns for Raw/Packaging/Supporting
+      worksheet.columns = [
+        { header: 'Kode Produk', key: 'productCode', width: 30 },
+        { header: 'Nama Produk', key: 'productName', width: 35 },
+        { header: 'Satuan', key: 'sizeValue', width: 20 },
+      ];
+    } else {
+      // Default / Fallback (All columns if no category specified)
+      worksheet.columns = [
+        { header: 'Kategori Utama (Main)', key: 'mainCategory', width: 25 },
+        { header: 'Sub Kategori', key: 'subCategory', width: 25 },
+        { header: 'Nama Produk (Konsep)', key: 'productName', width: 35 },
+        { header: 'Kode Produk', key: 'productCode', width: 30 },
+        { header: 'Ukuran/Satuan', key: 'sizeValue', width: 20 },
+      ];
+    }
+
+    // Style header row
+    const headerRow = worksheet.getRow(1);
+    headerRow.height = 25;
+    const cellCount = worksheet.columns.length;
+    for (let i = 1; i <= cellCount; i++) {
+      const cell = headerRow.getCell(i);
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF4472C4' },
+      };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = {
+        top: { style: 'thin' },
+        left: { style: 'thin' },
+        bottom: { style: 'thin' },
+        right: { style: 'thin' },
+      };
+    }
+
+    // Example Data based on category
+    // Example Data based on category
+    if (isBarangJadi) {
+      worksheet.addRow({
+        productCode: 'MANGO-FRESH-250ML',
+        productName: 'Mangga',
+        subCategory: 'FRESHLY',
+        productType: 'RTD',
+        sizeValue: '250 ML',
+      });
+    } else if (category?.toUpperCase() === 'BAHAN BAKU') {
+      worksheet.addRow({
+        productCode: 'GULA-KG',
+        productName: 'Gula Pasir',
+        sizeValue: '1 KG',
+      });
+    } else if (category) {
+      // Generic example for others
+      worksheet.addRow({
+        productCode: 'ITEM-001',
+        productName: 'Item Name',
+        sizeValue: '1 PCS',
+      });
+    } else {
+      // Default examples
+      worksheet.addRow({
+        mainCategory: 'BARANG JADI',
+        subCategory: 'FRESHLY',
+        productName: 'Mangga',
+        productCode: 'MANGO-FRESH-250ML',
+        sizeValue: '250 ML',
+      });
+    }
+
+    // Instructions Sheet
+    const instructionSheet = workbook.addWorksheet('Petunjuk Pengisian');
+    instructionSheet.columns = [
+      { header: 'Kolom', key: 'column', width: 25 },
+      { header: 'Keterangan', key: 'description', width: 70 },
+      { header: 'Wajib', key: 'required', width: 10 },
+    ];
+
+    // Style instruction header (Cell-based to avoid full row fill)
+    const headerCells = ['A1', 'B1', 'C1'];
+    headerCells.forEach((cellAddress) => {
+      const cell = instructionSheet.getCell(cellAddress);
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF70AD47' },
+      };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = {
+        top: { style: 'thin' },
+        left: { style: 'thin' },
+        bottom: { style: 'thin' },
+        right: { style: 'thin' },
+      };
+    });
+    instructionSheet.getRow(1).height = 25;
+
+    let instructions = [];
+
+    if (isBarangJadi) {
+      instructions = [
+        {
+          column: 'Kode Produk',
+          description: 'Kode unik barang',
+          required: 'Ya',
+        },
+        {
+          column: 'Nama Produk',
+          description: 'Nama umum produk',
+          required: 'Ya',
+        },
+        {
+          column: 'Sub Kategori',
+          description: 'Wajib diisi (FRESHLY, PREMIUM, BUFFET)',
+          required: 'Ya',
+        },
+        {
+          column: 'Tipe Produk',
+          description: 'Tipe spesifik (RTD, CONC)',
+          required: 'Ya',
+        },
+        {
+          column: 'Ukuran Produk',
+          description: 'Contoh: 250 ML, 1 LITER',
+          required: 'Ya',
+        },
+      ];
+    } else if (isOther) {
+      instructions = [
+        {
+          column: 'Kode Produk',
+          description: 'Kode unik barang',
+          required: 'Ya',
+        },
+        {
+          column: 'Nama Produk',
+          description: 'Nama umum produk',
+          required: 'Ya',
+        },
+        {
+          column: 'Satuan',
+          description: 'Satuan ukuran (KG, PCS, LITER)',
+          required: 'Ya',
+        },
+      ];
+    } else {
+      // Default instructions
+      instructions = [
+        {
+          column: 'Kategori Utama',
+          description: 'Pilih: BARANG JADI, dsb',
+          required: 'Ya',
+        },
+        {
+          column: 'Sub Kategori',
+          description: 'Untuk Barang Jadi',
+          required: 'Kondisional',
+        },
+        {
+          column: 'Nama Produk',
+          description: 'Nama konsep produk',
+          required: 'Ya',
+        },
+        { column: 'Kode Produk', description: 'Kode unik SKU', required: 'Ya' },
+        { column: 'Ukuran', description: 'Ukuran/Satuan', required: 'Ya' },
+      ];
+    }
+
+    instructions.forEach((instr) => {
+      const row = instructionSheet.addRow(instr);
+      row.eachCell((cell) => {
+        cell.border = {
+          top: { style: 'thin' },
+          left: { style: 'thin' },
+          bottom: { style: 'thin' },
+          right: { style: 'thin' },
+        };
+      });
+    });
+
+    // Add general notes
+    instructionSheet.addRow([]);
+    instructionSheet.addRow(['CATATAN PENTING:']).font = {
+      bold: true,
+      size: 12,
+    };
+    instructionSheet.addRow([
+      '1. Pastikan semua kolom yang wajib diisi tidak kosong',
+    ]);
+    instructionSheet.addRow([
+      '2. Kode Produk harus UNIK. Jika kode sudah ada, data akan di-update.',
+    ]);
+    instructionSheet.addRow([
+      '3. Untuk Barang Jadi, Sub Kategori dan Tipe Produk (RTD/CONC) wajib diisi sesuai pilihan.',
+    ]);
+    instructionSheet.addRow([
+      '4. Ukuran/Satuan harus sesuai dengan Master Size yang terdaftar.',
+    ]);
+    instructionSheet.addRow([
+      '5. Hapus baris contoh sebelum mengisi data produk Anda',
+    ]);
+    instructionSheet.addRow([
+      '6. Maksimal 1000 baris data dalam satu file upload',
+    ]);
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return Buffer.from(buffer);
+  }
+
+  /**
+   * Resolve or Create Product Concept (Name + SubCategory)
+   */
+  /**
+   * Resolve or Create Product Concept (Name + SubCategory + ProductType)
+   */
+  private async resolveOrCrateProductConcept(
+    productName: string,
+    subCategoryId: number | null, // Allow null for non-Barang Jadi
+    createdBy: { id: number },
+    productType?: string,
+  ): Promise<Products> {
+    const nameUpper = productName.toUpperCase().trim();
+
+    // Check existing - handle null subCategoryId
+    const whereClause: any = {
+      name: nameUpper,
+    };
+    if (subCategoryId) {
+      whereClause.category = { id: subCategoryId };
+    } else {
+      // For products without sub-category (e.g. Barang Baku), match by name + productType only
+      // categoryId will be null in DB
+    }
+    if (productType) {
+      whereClause.productType = productType;
+    }
+
+    const existing = await this.productRepo.findOne({
+      where: whereClause,
+      relations: ['category'],
+    });
+
+    if (existing) return existing;
+
+    // Create new
+    const newProduct = this.productRepo.create({
+      name: nameUpper,
+      category: subCategoryId ? { id: subCategoryId } : undefined, // Allow null (undefined for TypeORM)
+      productType: (productType as any) || null,
+      isActive: true,
+      createdBy,
+    });
+
+    return await this.productRepo.save(newProduct);
+  }
+
+  /**
+   * Upload and process Excel file for Product Code data
+   */
+  async uploadExcelFile(
+    fileBuffer: Buffer,
+    createdBy: { id: number },
+    category?: string,
+  ): Promise<import('./dto/products.dto').ExcelProductUploadResult> {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(fileBuffer as any);
+
+    const worksheet = workbook.getWorksheet('Template Upload Product');
+    if (!worksheet) {
+      throw new BadRequestException(
+        'Sheet "Template Upload Product" tidak ditemukan dalam file Excel',
+      );
+    }
+
+    const result: import('./dto/products.dto').ExcelProductUploadResult = {
+      totalRows: 0,
+      successCount: 0,
+      failedCount: 0,
+      errors: [],
+      successDetails: [],
+    };
+
+    // Cache Data for Performance
+    const mainCategories = await this.productCategoryRepo.find({
+      where: { level: 0 },
+    });
+    const subCategories = await this.productCategoryRepo.find({
+      where: { level: 1 },
+    });
+    const sizes = await this.productSizeRepo.find();
+
+    // Key-Value Maps for fast lookup
+    const mainCategoryMap = new Map(
+      mainCategories.map((c) => [c.name.toUpperCase(), c]),
+    );
+    const subCategoryMap = new Map(
+      subCategories.map((c) => [c.name.toUpperCase(), c]),
+    );
+
+    // Determine Context
+    const isBarangJadi = category?.toUpperCase() === 'BARANG JADI';
+    const isOther = category && !isBarangJadi;
+
+    // Resolve Main Category Context
+    let contextMainCat = null;
+    if (category) {
+      contextMainCat = mainCategoryMap.get(category.toUpperCase());
+      if (!contextMainCat) {
+        throw new BadRequestException(
+          `Category context "${category}" not found in database`,
+        );
+      }
+    }
+
+    const rowsToProcess: any[] = [];
+
+    // First pass: Read and basic validation
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return; // Skip header
+
+      const rowValues = row.values as any[];
+      const isEmptyRow =
+        !rowValues ||
+        rowValues.every(
+          (cell) => cell === null || cell === undefined || cell === '',
+        );
+      if (isEmptyRow) return;
+
+      result.totalRows++;
+
+      // Variables
+      let mainCatName = contextMainCat ? contextMainCat.name : '';
+      let subCatName = '';
+      let productName = '';
+      let productCode = '';
+      let sizeValueRaw = '';
+      let productType = ''; // New field
+
+      // Map Columns based on Context
+      if (isBarangJadi) {
+        // Columns: Code(1), Name(2), SubCat(3), Type(4), Size(5)
+        productCode =
+          row.getCell(1).value?.toString().trim().toUpperCase() || '';
+        productName =
+          row.getCell(2).value?.toString().trim().toUpperCase() || '';
+        subCatName =
+          row.getCell(3).value?.toString().trim().toUpperCase() || '';
+        productType =
+          row.getCell(4).value?.toString().trim().toUpperCase() || '';
+        sizeValueRaw =
+          row.getCell(5).value?.toString().trim().toUpperCase() || '';
+      } else if (isOther) {
+        // Columns: Code(1), Name(2), Unit(3)
+        productCode =
+          row.getCell(1).value?.toString().trim().toUpperCase() || '';
+        productName =
+          row.getCell(2).value?.toString().trim().toUpperCase() || '';
+        sizeValueRaw =
+          row.getCell(3).value?.toString().trim().toUpperCase() || ''; // Unit mapped to Size
+      } else {
+        // Default: Main(1), Sub(2), Name(3), Code(4), Size(5)
+        mainCatName =
+          row.getCell(1).value?.toString().trim().toUpperCase() || '';
+        subCatName =
+          row.getCell(2).value?.toString().trim().toUpperCase() || '';
+        productName =
+          row.getCell(3).value?.toString().trim().toUpperCase() || '';
+        productCode =
+          row.getCell(4).value?.toString().trim().toUpperCase() || '';
+        sizeValueRaw =
+          row.getCell(5).value?.toString().trim().toUpperCase() || '';
+      }
+
+      const rowErrors: string[] = [];
+
+      // Validation
+      if (!productName) rowErrors.push('Nama Produk wajib diisi');
+      if (!productCode) rowErrors.push('Kode Produk wajib diisi');
+      if (!sizeValueRaw) rowErrors.push('Ukuran/Satuan wajib diisi');
+
+      // Context checks
+      if (!isBarangJadi && !isOther && !mainCatName) {
+        rowErrors.push(
+          'Kategori Utama wajib diisi (jika tidak menggunakan context upload)',
+        );
+      }
+
+      // Main Category Validation
+      const mainCat = contextMainCat || mainCategoryMap.get(mainCatName);
+      if (!mainCat) {
+        rowErrors.push(`Kategori Utama "${mainCatName}" tidak ditemukan`);
+      }
+
+      // Sub Category Validation
+      // Logic: Required if Main Category == BARANG JADI
+      // Logic: For others (BAHAN BAKU), SubCat might be empty but we need a default one?
+      // Let's resolve SubCat object
+      let subCat = subCatName ? subCategoryMap.get(subCatName) : null;
+
+      if (mainCat?.name.toUpperCase() === 'BARANG JADI') {
+        if (!subCatName) {
+          rowErrors.push('Sub Kategori wajib diisi untuk Barang Jadi');
+        } else if (!subCat) {
+          rowErrors.push(`Sub Kategori "${subCatName}" tidak ditemukan`);
+        }
+
+        if (!productType && isBarangJadi) {
+          // Only enforce if using new template version
+          rowErrors.push('Tipe Produk wajib diisi untuk Barang Jadi');
+        }
+      }
+
+      if (rowErrors.length > 0) {
+        result.failedCount++;
+        result.errors.push({
+          row: rowNumber,
+          productName,
+          errors: rowErrors,
+        });
+        return; // Skip processing for this row
+      }
+
+      rowsToProcess.push({
+        rowNumber,
+        mainCat,
+        subCat, // Can be null
+        productName,
+        productCode,
+        sizeValueRaw,
+        productType,
+      });
+    });
+
+    // Process Valid Rows
+    for (const rowData of rowsToProcess) {
+      try {
+        // 1. Resolve Size
+        const targetSize = sizes.find(
+          (s) =>
+            rowData.sizeValueRaw === `${s.sizeValue} ${s.unitOfMeasure}` || // e.g. "250 ML"
+            rowData.sizeValueRaw === s.sizeValue || // e.g. "250"
+            rowData.sizeValueRaw === s.unitOfMeasure, // e.g. "KG" (for raw materials often just Unit)
+        );
+
+        if (!targetSize) {
+          throw new Error(
+            `Ukuran/Satuan "${rowData.sizeValueRaw}" tidak ditemukan. Pastikan sesuai Master Size.`,
+          );
+        }
+
+        // 2. Resolve SubCategory
+        // For "Barang Jadi": subCategory is required (FRESHLY, PREMIUM, BUFFET)
+        // For others (Barang Baku, Kemasan, Pembantu): subCategory is null
+        let finalSubCatId: number | null = rowData.subCat?.id ?? null;
+
+        // If this is Barang Jadi without SubCat, try finding one under main category
+        if (
+          !finalSubCatId &&
+          rowData.mainCat?.name?.toUpperCase() === 'BARANG JADI'
+        ) {
+          const genericSub = subCategories.find(
+            (s) => s.parentId === rowData.mainCat.id,
+          );
+          if (genericSub) {
+            finalSubCatId = genericSub.id;
+          }
+          // Note: If still null for Barang Jadi, validation earlier should have caught it
+        }
+        // For non-Barang Jadi main categories, finalSubCatId stays null - this is correct!
+
+        // 3. Resolve/Create Product Concept
+        const product = await this.resolveOrCrateProductConcept(
+          rowData.productName,
+          finalSubCatId, // Can be null for Barang Baku/Kemasan/Pembantu
+          createdBy,
+          rowData.productType, // Valid context for uniqueness
+        );
+
+        // 4. Create/Update Product Code
+        const existingCode = await this.productCodeRepo.findOne({
+          where: { productCode: rowData.productCode },
+        });
+
+        if (existingCode) {
+          existingCode.product = product;
+          existingCode.category = rowData.mainCat;
+          existingCode.size = targetSize;
+          await this.productCodeRepo.save(existingCode);
+        } else {
+          const newCode = this.productCodeRepo.create({
+            productCode: rowData.productCode,
+            product: product,
+            category: rowData.mainCat,
+            size: targetSize,
+            isActive: true,
+            createdBy,
+          });
+          await this.productCodeRepo.save(newCode);
+        }
+
+        result.successCount++;
+        result.successDetails.push({
+          row: rowData.rowNumber,
+          productName: rowData.productName,
+          productCode: rowData.productCode,
+        });
+      } catch (error) {
+        result.failedCount++;
+        result.errors.push({
+          row: rowData.rowNumber,
+          productName: rowData.productName,
+          errors: [error.message],
+        });
+      }
+    }
+
+    return result;
   }
 }

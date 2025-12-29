@@ -31,7 +31,6 @@ import { InventoryLegacyService } from '../../inventory/services/inventory-legac
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { NotificationEventEmitter } from '../../notifications/services/notification-event-emitter.service';
 
-
 @Injectable()
 export class ProductionBatchService extends BaseResponse {
   private readonly logger = new Logger(ProductionBatchService.name);
@@ -53,7 +52,6 @@ export class ProductionBatchService extends BaseResponse {
     private readonly productionFormulaService: ProductionFormulaService,
     private readonly inventoryService: InventoryLegacyService,
     private readonly notificationEventEmitter: NotificationEventEmitter,
-
   ) {
     super();
   }
@@ -469,6 +467,7 @@ export class ProductionBatchService extends BaseResponse {
           'materialUsages', // Include auto-created material usage records
           'materialUsages.materialProductCode',
           'materialUsages.materialProductCode.product',
+          'materialUsages.materialProductCode.category',
         ],
       });
 
@@ -941,7 +940,7 @@ export class ProductionBatchService extends BaseResponse {
           'materialUsages',
           'materialUsages.materialProductCode',
           'materialUsages.materialProductCode.product',
-          'materialUsages.materialProductCode.product.category',
+          'materialUsages.materialProductCode.category',
         ],
       });
 

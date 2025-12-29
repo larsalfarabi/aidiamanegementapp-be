@@ -8,7 +8,15 @@ import {
   Put,
   Delete,
   Body,
+  UseInterceptors,
+  UploadedFile,
+  Res,
+  HttpStatus,
+  BadRequestException,
+  Query,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { Response } from 'express';
 import { ProductsService } from './products.service';
 import { Pagination } from '../../common/decorator/pagination.decorator';
 import { PaginationDto } from '../../common/dto/pagination.dto';
@@ -129,5 +137,51 @@ export class ProductsController {
     @Pagination() query: import('./dto/products.dto').ProductSizeQueryDto,
   ) {
     return this.productsService.findAllProductSizes(query);
+  }
+
+  // * --- EXCEL UPLOAD --- */
+  @Get('excel/template')
+  @RequirePermissions(`${Resource.PRODUCT}:${Action.VIEW}`)
+  async downloadTemplate(
+    @Query('category') category: string,
+    @Res({ passthrough: false }) res: Response,
+  ) {
+    const buffer = await this.productsService.generateExcelTemplate(category);
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename=Template_Upload_Product.xlsx',
+    );
+
+    res.send(buffer);
+  }
+
+  @Post('excel/upload')
+  @RequirePermissions(`${Resource.PRODUCT}:${Action.CREATE}`)
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadExcel(
+    @UploadedFile() file: any,
+    @InjectCreatedBy() payload: any,
+    @Query('category') category: string,
+  ) {
+    if (!file) {
+      throw new BadRequestException('File is required');
+    }
+
+    const result = await this.productsService.uploadExcelFile(
+      file.buffer,
+      payload.createdBy,
+      category,
+    );
+
+    return {
+      statusCode: HttpStatus.OK,
+      message: 'Excel file processed',
+      data: result,
+    };
   }
 }
