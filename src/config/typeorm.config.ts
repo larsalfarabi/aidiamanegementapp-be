@@ -26,10 +26,10 @@ const AppDataSource = new DataSource({
   migrationsTableName: 'migrations',
 
   // Disable synchronize in production
-  synchronize: true,
+  synchronize: false,
 
   // Enable logging for debugging
-  logging: true,
+  logging: false,
 
   // Character set for MySQL
   charset: 'utf8mb4',

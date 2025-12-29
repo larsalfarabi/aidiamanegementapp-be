@@ -25,7 +25,7 @@ import { ProductSizes } from '../../modules/products/entity/product_sizes.entity
       password: process.env.DB_PASSWORD || '',
       database: process.env.DB_DATABASE,
       entities: [Users, Roles, Permissions, ProductCategories, ProductSizes],
-      synchronize: true, // Don't auto-create tables since they exist
+      synchronize: false, // Don't auto-create tables since they exist
       logging: false, // Reduce noise during seeding
     }),
     TypeOrmModule.forFeature([

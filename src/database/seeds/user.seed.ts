@@ -20,7 +20,7 @@ export class UserSeeder {
 
     // Get roles first
     const superAdminRole = await this.roleRepo.findOne({
-      where: { name: 'Super Admin' },
+      where: { name: 'IT AIDIA' },
     });
 
     if (!superAdminRole) {
@@ -33,8 +33,8 @@ export class UserSeeder {
     // Define users to create
     const usersData = [
       {
-        firstName: 'Super',
-        lastName: 'Admin',
+        firstName: 'IT',
+        lastName: 'AIDIA',
         email: 'msyamil404@gmail.com',
         password: 'Larsabi@01',
         isActive: true,

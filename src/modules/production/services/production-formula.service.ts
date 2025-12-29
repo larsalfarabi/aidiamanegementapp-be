@@ -255,7 +255,8 @@ export class ProductionFormulaService extends BaseResponse {
 
       // Cache Strategy
       const cacheKey = `formulas:list:${JSON.stringify(filterDto)}`;
-      const cachedData = await this.redisService.get<ResponsePagination>(cacheKey);
+      const cachedData =
+        await this.redisService.get<ResponsePagination>(cacheKey);
 
       if (cachedData) {
         return {
@@ -343,7 +344,7 @@ export class ProductionFormulaService extends BaseResponse {
           'materials',
           'materials.materialProductCode',
           'materials.materialProductCode.product',
-          'materials.materialProductCode.product.category', // Products.category = Sub Category (level 1)
+          'materials.materialProductCode.category', // Products.category = Sub Category (level 1)
         ],
       });
 

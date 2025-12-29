@@ -148,7 +148,7 @@ export class CustomersController {
       throw new BadRequestException('File is required');
     }
 
-    const result = await this.customersService.uploadExcelFile(
+    const result = await this.customersService.uploadUnifiedExcelFile(
       file.buffer,
       payload.createdBy,
     );

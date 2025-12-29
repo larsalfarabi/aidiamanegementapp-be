@@ -34,7 +34,6 @@ import * as ExcelJS from 'exceljs';
 import { Users } from '../users/entities/users.entity';
 import { ProductCodes } from '../products/entity/product_codes.entity';
 
-
 @Injectable()
 export class CustomersService extends BaseResponse {
   constructor(
@@ -47,47 +46,70 @@ export class CustomersService extends BaseResponse {
     @InjectRepository(ProductCodes)
     private readonly productCodesRepo: Repository<ProductCodes>,
     private readonly dataSource: DataSource,
-
   ) {
     super();
   }
 
   async findAll(query: PaginationDto): Promise<ResponsePagination> {
-    const { page, limit, pageSize } = query;
+    const { page, limit, pageSize, search } = query;
+
+    // Build search condition
+    let searchCondition = '';
+    const searchParams: string[] = [];
+    if (search && search.trim()) {
+      const searchTerm = `%${search.trim()}%`;
+      searchCondition = `
+        AND (
+          c.customerName LIKE ? 
+          OR c.customerCode LIKE ? 
+          OR c.contactPerson LIKE ?
+          OR c.customerType LIKE ?
+        )
+      `;
+      searchParams.push(searchTerm, searchTerm, searchTerm, searchTerm);
+    }
 
     // Get data dengan raw query
-    const result = await this.customersRepo.query(`
-    SELECT 
-      c.id,
-      c.customerCode,
-      c.customerName,
-      c.address,
-      c.contactPerson,
-      c.companyName,
-      c.phoneNumber,
-      c.customerType,
-      c.taxType,
-      c.isActive,
-      c.createdAt,
-      c.updatedAt,
-      (
-        SELECT MAX(o.orderDate) 
-        FROM orders o 
-        WHERE o.customerId = c.id 
-        AND (o.isDeleted IS NULL OR o.isDeleted = false)
-      ) as lastOrderDate
-    FROM customers c
-    WHERE (c.isDeleted = false OR c.isDeleted IS NULL)
-    ORDER BY c.createdAt DESC
-    LIMIT ${pageSize} OFFSET ${limit}
-  `);
+    const result = await this.customersRepo.query(
+      `
+      SELECT 
+        c.id,
+        c.customerCode,
+        c.customerName,
+        c.address,
+        c.contactPerson,
+        c.companyName,
+        c.phoneNumber,
+        c.customerType,
+        c.taxType,
+        c.isActive,
+        c.createdAt,
+        c.updatedAt,
+        (
+          SELECT MAX(o.orderDate) 
+          FROM orders o 
+          WHERE o.customerId = c.id 
+          AND (o.isDeleted IS NULL OR o.isDeleted = false)
+        ) as lastOrderDate
+      FROM customers c
+      WHERE (c.isDeleted = false OR c.isDeleted IS NULL)
+      ${searchCondition}
+      ORDER BY c.createdAt DESC
+      LIMIT ? OFFSET ?
+    `,
+      [...searchParams, pageSize, limit],
+    );
 
-    // Get count
-    const countResult = await this.customersRepo.query(`
-    SELECT COUNT(*) as total
-    FROM customers c
-    WHERE (c.isDeleted = false OR c.isDeleted IS NULL)
-  `);
+    // Get count with same search condition
+    const countResult = await this.customersRepo.query(
+      `
+      SELECT COUNT(*) as total
+      FROM customers c
+      WHERE (c.isDeleted = false OR c.isDeleted IS NULL)
+      ${searchCondition}
+    `,
+      searchParams,
+    );
 
     const count = parseInt(countResult[0].total);
 
@@ -338,44 +360,50 @@ export class CustomersService extends BaseResponse {
   }
 
   /**
-   * Generate Excel template for customer data upload
+   * Generate unified Excel template for customer + catalog upload
+   * ✅ HUMAN-CENTERED: Single file for customer data AND product catalogs
+   * ✅ INTUITIVE: Duplicate customer rows for multiple products
    */
   async generateExcelTemplate(): Promise<Buffer> {
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Template Upload Customer');
 
-    // Define column headers (Kode Customer akan di-generate otomatis oleh sistem)
+    // Define unified column headers (Customer + Catalog)
     worksheet.columns = [
       { header: 'Nama Customer', key: 'customerName', width: 35 },
       { header: 'Alamat', key: 'address', width: 45 },
       { header: 'Contact Person', key: 'contactPerson', width: 25 },
       { header: 'Nama Perusahaan', key: 'companyName', width: 30 },
-      { header: 'Nomor Telepon', key: 'phoneNumber', width: 20 },
-      { header: 'Tipe Customer', key: 'customerType', width: 20 },
-      { header: 'Tipe Pajak', key: 'taxType', width: 15 },
+      { header: 'Nomor Telepon', key: 'phoneNumber', width: 18 },
+      { header: 'Tipe Customer', key: 'customerType', width: 15 },
+      { header: 'Tipe Pajak', key: 'taxType', width: 12 },
+      { header: 'Kode Produk', key: 'productCode', width: 18 },
+      { header: 'Harga Produk', key: 'customerPrice', width: 15 },
     ];
 
-    // Style header row (hanya sampai kolom terakhir yang digunakan: G)
+    // Style header row (9 columns: A-I)
     const headerRow = worksheet.getRow(1);
     headerRow.height = 25;
-    ['A1', 'B1', 'C1', 'D1', 'E1', 'F1', 'G1'].forEach((cellAddress) => {
-      const cell = worksheet.getCell(cellAddress);
-      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-      cell.fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FF4472C4' },
-      };
-      cell.alignment = { vertical: 'middle', horizontal: 'center' };
-      cell.border = {
-        top: { style: 'thin' },
-        left: { style: 'thin' },
-        bottom: { style: 'thin' },
-        right: { style: 'thin' },
-      };
-    });
+    ['A1', 'B1', 'C1', 'D1', 'E1', 'F1', 'G1', 'H1', 'I1'].forEach(
+      (cellAddress) => {
+        const cell = worksheet.getCell(cellAddress);
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FF4472C4' },
+        };
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        cell.border = {
+          top: { style: 'thin' },
+          left: { style: 'thin' },
+          bottom: { style: 'thin' },
+          right: { style: 'thin' },
+        };
+      },
+    );
 
-    // Add example data (Kode Customer akan di-generate otomatis)
+    // Add example data with multiple products per customer
     worksheet.addRow({
       customerName: 'Hotel Grand Surya',
       address: 'Jl. Raya Kuta No. 45, Badung, Bali',
@@ -384,6 +412,20 @@ export class CustomersService extends BaseResponse {
       phoneNumber: '0361-123456',
       customerType: 'Hotel',
       taxType: 'PPN',
+      productCode: 'BJ3PG4R',
+      customerPrice: 45000,
+    });
+
+    worksheet.addRow({
+      customerName: 'Hotel Grand Surya',
+      address: 'Jl. Raya Kuta No. 45, Badung, Bali',
+      contactPerson: 'Budi Santoso',
+      companyName: 'PT Grand Surya Hospitality',
+      phoneNumber: '0361-123456',
+      customerType: 'Hotel',
+      taxType: 'PPN',
+      productCode: 'BJ3OR4R',
+      customerPrice: 45000,
     });
 
     worksheet.addRow({
@@ -394,29 +436,29 @@ export class CustomersService extends BaseResponse {
       phoneNumber: '0812-3456-7890',
       customerType: 'Cafe & Resto',
       taxType: 'Non PPN',
+      productCode: 'BJ3MG4R',
+      customerPrice: 50000,
     });
 
     // Add instructions in a separate sheet
     const instructionSheet = workbook.addWorksheet('Petunjuk Pengisian');
     instructionSheet.columns = [
       { header: 'Kolom', key: 'column', width: 20 },
-      { header: 'Keterangan', key: 'description', width: 60 },
+      { header: 'Keterangan', key: 'description', width: 65 },
       { header: 'Wajib Diisi', key: 'required', width: 15 },
     ];
 
-    // Style instruction header
-    const instrHeaderRow = instructionSheet.getRow(1);
-    instrHeaderRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    instrHeaderRow.fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FF70AD47' },
-    };
-    instrHeaderRow.alignment = { vertical: 'middle', horizontal: 'center' };
-    instrHeaderRow.height = 25;
-
-    // Add border to instruction header
-    instrHeaderRow.eachCell((cell) => {
+    // Style instruction header (Cell-based)
+    const headerCells = ['A1', 'B1', 'C1'];
+    headerCells.forEach((cellAddress) => {
+      const cell = instructionSheet.getCell(cellAddress);
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FF70AD47' },
+      };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
       cell.border = {
         top: { style: 'thin' },
         left: { style: 'thin' },
@@ -424,13 +466,14 @@ export class CustomersService extends BaseResponse {
         right: { style: 'thin' },
       };
     });
+    instructionSheet.getRow(1).height = 25;
 
     // Add instruction data
     const instructions = [
       {
         column: 'Nama Customer',
         description:
-          'Nama lengkap customer atau bisnis. Kode customer akan otomatis dibuat berdasarkan huruf pertama nama (contoh: "Hotel Surya" → H-001)',
+          'Nama lengkap customer. Kode akan otomatis dibuat (contoh: "Hotel Surya" → H-001)',
         required: 'Ya',
       },
       {
@@ -455,13 +498,24 @@ export class CustomersService extends BaseResponse {
       },
       {
         column: 'Tipe Customer',
-        description:
-          'Pilihan: Hotel, Cafe & Resto, Catering, atau Reseller (harus sesuai dengan pilihan)',
+        description: 'Pilihan: Hotel, Cafe & Resto, Catering, atau Reseller',
         required: 'Ya',
       },
       {
         column: 'Tipe Pajak',
-        description: 'Pilihan: PPN atau Non PPN (harus sesuai dengan pilihan)',
+        description: 'Pilihan: PPN atau Non PPN',
+        required: 'Ya',
+      },
+      {
+        column: 'Kode Produk',
+        description:
+          'Kode produk yang akan ditambahkan ke catalog customer (harus sesuai master data)',
+        required: 'Ya',
+      },
+      {
+        column: 'Harga Produk',
+        description:
+          'Harga khusus untuk customer ini dalam Rupiah (contoh: 45000)',
         required: 'Ya',
       },
     ];
@@ -485,22 +539,25 @@ export class CustomersService extends BaseResponse {
       size: 12,
     };
     instructionSheet.addRow([
-      '1. Pastikan semua kolom yang wajib diisi tidak kosong',
+      '1. Jika customer memiliki banyak produk, DUPLIKASI baris data customer dengan produk berbeda',
     ]);
     instructionSheet.addRow([
-      '2. Kode Customer akan dibuat OTOMATIS oleh sistem berdasarkan huruf pertama nama customer',
+      '2. Sistem akan otomatis mengelompokkan produk per customer berdasarkan nama',
     ]);
     instructionSheet.addRow([
-      '3. Format kode: [Huruf Pertama]-[Nomor] (contoh: H-001, H-002, C-001)',
+      '3. Kode Customer akan dibuat OTOMATIS oleh sistem berdasarkan huruf pertama nama',
     ]);
     instructionSheet.addRow([
-      '4. Tipe Customer dan Tipe Pajak harus sesuai dengan pilihan yang tersedia',
+      '4. Format kode: [Huruf Pertama]-[Nomor] (contoh: H-001, C-001)',
     ]);
     instructionSheet.addRow([
-      '5. Hapus baris contoh sebelum mengisi data customer Anda',
+      '5. Kode Produk harus sesuai dengan data master produk di sistem',
     ]);
     instructionSheet.addRow([
-      '6. Maksimal 1000 baris data dalam satu file upload',
+      '6. Hapus baris contoh sebelum mengisi data Anda',
+    ]);
+    instructionSheet.addRow([
+      '7. Maksimal 1000 baris data dalam satu file upload',
     ]);
 
     const buffer = await workbook.xlsx.writeBuffer();
@@ -814,6 +871,277 @@ export class CustomersService extends BaseResponse {
       failureCount: errors.length,
       errors,
       successDetails: validSuccessDetails,
+    };
+  }
+
+  /**
+   * Upload and process unified Excel file for customer + catalog data
+   * ✅ HUMAN-CENTERED: Single file for customer data AND product catalogs
+   * ✅ EFFICIENT: Groups rows by customer, creates once, then adds catalogs
+   * ✅ INTUITIVE: Supports duplicate customer rows for multiple products
+   */
+  async uploadUnifiedExcelFile(
+    fileBuffer: Buffer,
+    createdBy: { id: number },
+  ): Promise<ExcelUploadResult> {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(fileBuffer as any);
+
+    const worksheet = workbook.getWorksheet('Template Upload Customer');
+    if (!worksheet) {
+      throw new BadRequestException(
+        'Sheet "Template Upload Customer" tidak ditemukan dalam file Excel',
+      );
+    }
+
+    const errors: ExcelUploadError[] = [];
+    const successDetails: ExcelUploadSuccess[] = [];
+
+    // Track uploaded customer codes to avoid duplicates
+    const uploadedCodesSet = new Set<string>();
+
+    // Group rows by customer name (key = customerName.toUpperCase())
+    interface CustomerRowData {
+      row: number;
+      customerName: string;
+      address: string;
+      contactPerson: string;
+      companyName: string;
+      phoneNumber: string;
+      customerType: string;
+      taxType: string;
+      productCode: string;
+      customerPrice: number;
+    }
+
+    const customerGroups = new Map<string, CustomerRowData[]>();
+
+    // First pass: Read all rows and group by customer
+    let totalRows = 0;
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return; // Skip header
+
+      const rowValues = row.values as any[];
+      const isEmptyRow =
+        rowValues &&
+        Array.isArray(rowValues) &&
+        rowValues.every(
+          (cell: any) => cell === null || cell === undefined || cell === '',
+        );
+      if (isEmptyRow) return;
+
+      totalRows++;
+
+      // Read unified columns (9 columns)
+      const customerName = row.getCell(1).value?.toString().trim() || '';
+      const address = row.getCell(2).value?.toString().trim() || '';
+      const contactPerson = row.getCell(3).value?.toString().trim() || '';
+      const companyName = row.getCell(4).value?.toString().trim() || '';
+      const phoneNumber = row.getCell(5).value?.toString().trim() || '';
+      const customerType = row.getCell(6).value?.toString().trim() || '';
+      const taxType = row.getCell(7).value?.toString().trim() || '';
+      const productCode =
+        row.getCell(8).value?.toString().trim().toUpperCase() || '';
+      const customerPrice = parseFloat(row.getCell(9).value?.toString() || '0');
+
+      const rowData: CustomerRowData = {
+        row: rowNumber,
+        customerName,
+        address,
+        contactPerson,
+        companyName,
+        phoneNumber,
+        customerType,
+        taxType,
+        productCode,
+        customerPrice,
+      };
+
+      // Validate required customer fields
+      const rowErrors: string[] = [];
+      if (!customerName) rowErrors.push('Nama Customer wajib diisi');
+      if (!address) rowErrors.push('Alamat wajib diisi');
+      if (!contactPerson) rowErrors.push('Contact Person wajib diisi');
+      if (!phoneNumber) rowErrors.push('Nomor Telepon wajib diisi');
+      if (!customerType) rowErrors.push('Tipe Customer wajib diisi');
+      if (!taxType) rowErrors.push('Tipe Pajak wajib diisi');
+      if (!productCode) rowErrors.push('Kode Produk wajib diisi');
+      if (customerPrice <= 0) rowErrors.push('Harga Produk harus lebih dari 0');
+
+      // Validate customer type
+      const validCustomerTypes = [
+        'Hotel',
+        'Cafe & Resto',
+        'Catering',
+        'Reseller',
+      ];
+      if (customerType && !validCustomerTypes.includes(customerType)) {
+        rowErrors.push(
+          `Tipe Customer tidak valid. Pilihan: ${validCustomerTypes.join(', ')}`,
+        );
+      }
+
+      // Validate tax type
+      const validTaxTypes = ['PPN', 'Non PPN'];
+      if (taxType && !validTaxTypes.includes(taxType)) {
+        rowErrors.push(
+          `Tipe Pajak tidak valid. Pilihan: ${validTaxTypes.join(', ')}`,
+        );
+      }
+
+      // Validate customer name starts with alphabet
+      if (customerName && !/^[A-Z]/i.test(customerName)) {
+        rowErrors.push('Nama Customer harus dimulai dengan huruf alphabet');
+      }
+
+      if (rowErrors.length > 0) {
+        errors.push({
+          row: rowNumber,
+          customerCode: '',
+          customerName,
+          errors: rowErrors,
+        });
+      } else {
+        // Group by customer name (case insensitive)
+        const key = customerName.toUpperCase();
+        if (!customerGroups.has(key)) {
+          customerGroups.set(key, []);
+        }
+        customerGroups.get(key)!.push(rowData);
+      }
+    });
+
+    // Check row limit
+    if (totalRows > 1000) {
+      throw new BadRequestException(
+        'File Excel melebihi batas maksimum 1000 baris data',
+      );
+    }
+
+    if (totalRows === 0) {
+      throw new BadRequestException('File Excel tidak memiliki data');
+    }
+
+    // Second pass: Process each customer group
+    await this.dataSource.transaction(async (manager) => {
+      for (const [customerKey, rows] of customerGroups) {
+        const firstRow = rows[0];
+
+        try {
+          // 1. Check if customer already exists (by name match)
+          let customer = await manager.findOne(Customers, {
+            where: { customerName: firstRow.customerName, isDeleted: false },
+          });
+
+          let customerCode = customer?.customerCode || '';
+          let isNewCustomer = false;
+
+          if (!customer) {
+            // Generate customer code
+            customerCode = await this.generateCustomerCode(
+              firstRow.customerName,
+              uploadedCodesSet,
+            );
+            uploadedCodesSet.add(customerCode.toUpperCase());
+
+            // Create new customer
+            customer = manager.create(Customers, {
+              customerCode,
+              customerName: firstRow.customerName,
+              address: firstRow.address,
+              contactPerson: firstRow.contactPerson,
+              companyName: firstRow.companyName || undefined,
+              phoneNumber: firstRow.phoneNumber,
+              customerType: firstRow.customerType as any,
+              taxType: firstRow.taxType as any,
+              isActive: true,
+              createdBy,
+            });
+            await manager.save(customer);
+            isNewCustomer = true;
+          }
+
+          // 2. Get existing catalog items for this customer
+          const existingCatalog = await manager.find(CustomerProductCatalogs, {
+            where: { customerId: customer.id, isActive: true },
+            select: ['productCodeId'],
+          });
+          const existingProductIds = new Set(
+            existingCatalog.map((c) => c.productCodeId),
+          );
+
+          // 3. Process each product for this customer
+          let catalogAddedCount = 0;
+          for (const rowData of rows) {
+            // Find product code in database
+            const productCodeEntity = await this.productCodesRepo.findOne({
+              where: { productCode: rowData.productCode, isDeleted: false },
+            });
+
+            if (!productCodeEntity) {
+              errors.push({
+                row: rowData.row,
+                customerCode,
+                customerName: rowData.customerName,
+                errors: [
+                  `Kode Produk "${rowData.productCode}" tidak ditemukan di master data`,
+                ],
+              });
+              continue;
+            }
+
+            // Check if already in catalog
+            if (existingProductIds.has(productCodeEntity.id)) {
+              errors.push({
+                row: rowData.row,
+                customerCode,
+                customerName: rowData.customerName,
+                errors: [
+                  `Produk "${rowData.productCode}" sudah ada di catalog customer ini`,
+                ],
+              });
+              continue;
+            }
+
+            // Add to catalog
+            const catalogItem = manager.create(CustomerProductCatalogs, {
+              customerId: customer.id,
+              productCodeId: productCodeEntity.id,
+              customerPrice: rowData.customerPrice,
+              discountPercentage: 0,
+              effectiveDate: new Date(),
+              isActive: true,
+              createdBy,
+            });
+            await manager.save(catalogItem);
+            existingProductIds.add(productCodeEntity.id); // Track to avoid duplicates within file
+            catalogAddedCount++;
+          }
+
+          // Add to success details
+          successDetails.push({
+            row: firstRow.row,
+            customerCode,
+            customerName: firstRow.customerName,
+          });
+        } catch (error) {
+          // Handle errors for this customer group
+          errors.push({
+            row: firstRow.row,
+            customerCode: '',
+            customerName: firstRow.customerName,
+            errors: [error.message || 'Gagal memproses data customer'],
+          });
+        }
+      }
+    });
+
+    return {
+      totalRows,
+      successCount: successDetails.length,
+      failureCount: errors.length,
+      errors,
+      successDetails,
     };
   }
 

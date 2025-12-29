@@ -116,6 +116,13 @@ export class ProductSeeder {
         categoryType: CategoryType.SUB,
         parentId: createdMainCategories['Barang Jadi'].id,
       },
+      {
+        name: 'Simple Syrup',
+        description: 'Sub-kategori Simple Syrup',
+        level: 1,
+        categoryType: CategoryType.SUB,
+        parentId: createdMainCategories['Barang Jadi'].id,
+      },
     ];
 
     const createdSubCategories: { [key: string]: any } = {};
@@ -145,9 +152,23 @@ export class ProductSeeder {
     const productSizes = [
       // ✅ BARANG JADI - Volume (ML/LITER)
       {
+        sizeValue: '120 ML',
+        unitOfMeasure: 'ML',
+        baseValue: 120,
+        baseUnit: 'ML',
+        categoryType: 'BARANG_JADI',
+      },
+      {
         sizeValue: '250 ML',
         unitOfMeasure: 'ML',
         baseValue: 250,
+        baseUnit: 'ML',
+        categoryType: 'BARANG_JADI',
+      },
+      {
+        sizeValue: '600 ML',
+        unitOfMeasure: 'ML',
+        baseValue: 600,
         baseUnit: 'ML',
         categoryType: 'BARANG_JADI',
       },
@@ -178,6 +199,12 @@ export class ProductSeeder {
         sizeValue: 'ML',
         unitOfMeasure: 'ML',
         baseUnit: 'ML',
+        categoryType: 'BAHAN_BAKU, BAHAN_PEMBANTU',
+      },
+      {
+        sizeValue: 'LTR',
+        unitOfMeasure: 'LTR',
+        baseUnit: 'LTR',
         categoryType: 'BAHAN_BAKU, BAHAN_PEMBANTU',
       },
 
