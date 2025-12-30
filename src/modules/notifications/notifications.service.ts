@@ -24,7 +24,18 @@ import {
 import { NotificationNumberGenerator } from './utils/notification-number.generator';
 import { Users } from '../users/entities/users.entity';
 import { NotificationsGateway } from './notifications.gateway';
+import { RedisService } from '../redis/redis.service';
 import { Logger } from '@nestjs/common';
+
+// ✅ OPTIMIZATION: Configuration constants
+const NOTIFICATION_CONFIG = {
+  RETRY_MAX_ATTEMPTS: 3,
+  RETRY_DELAY_MIN_MS: 50,
+  RETRY_DELAY_MAX_MS: 150,
+  EXPIRE_DAYS_LOW_PRIORITY: 30,
+  EXPIRE_DAYS_HIGH_PRIORITY: 90,
+  UNREAD_COUNT_CACHE_TTL: 30, // seconds
+} as const;
 
 @Injectable()
 export class NotificationsService extends BaseResponse {
@@ -39,6 +50,7 @@ export class NotificationsService extends BaseResponse {
     private userRepo: Repository<Users>,
     @Inject(forwardRef(() => NotificationsGateway))
     private notificationsGateway: NotificationsGateway,
+    private readonly redisService: RedisService,
   ) {
     super();
   }
@@ -259,8 +271,18 @@ export class NotificationsService extends BaseResponse {
 
   /**
    * Get unread notification count for user
+   * ✅ OPTIMIZED: Redis caching with 30s TTL
    */
   async getUnreadCount(userId: number): Promise<ResponseSuccess> {
+    const cacheKey = `notification:unread:${userId}`;
+
+    // Try cache first
+    const cached = await this.redisService.get<{ count: number }>(cacheKey);
+    if (cached !== null) {
+      return this._success('Unread count retrieved (cached)', cached);
+    }
+
+    // Cache miss - query database
     const count = await this.notificationReadRepo.count({
       where: {
         userId,
@@ -270,11 +292,21 @@ export class NotificationsService extends BaseResponse {
       relations: ['notification'],
     });
 
-    return this._success('Unread count retrieved', { count });
+    const result = { count };
+
+    // Cache result
+    await this.redisService.set(
+      cacheKey,
+      result,
+      NOTIFICATION_CONFIG.UNREAD_COUNT_CACHE_TTL,
+    );
+
+    return this._success('Unread count retrieved', result);
   }
 
   /**
    * Mark notification as read
+   * ✅ OPTIMIZED: Invalidates Redis cache
    */
   async markAsRead(
     userId: number,
@@ -301,11 +333,15 @@ export class NotificationsService extends BaseResponse {
 
     await this.notificationReadRepo.save(notificationRead);
 
+    // ✅ Invalidate cache
+    await this.redisService.del(`notification:unread:${userId}`);
+
     return this._success('Notification marked as read');
   }
 
   /**
    * Mark all notifications as read for user
+   * ✅ OPTIMIZED: Invalidates Redis cache
    */
   async markAllAsRead(userId: number): Promise<ResponseSuccess> {
     const unreadNotifications = await this.notificationReadRepo.find({
@@ -327,6 +363,9 @@ export class NotificationsService extends BaseResponse {
     });
 
     await this.notificationReadRepo.save(unreadNotifications);
+
+    // ✅ Invalidate cache
+    await this.redisService.del(`notification:unread:${userId}`);
 
     return this._success(
       `${unreadNotifications.length} notifications marked as read`,

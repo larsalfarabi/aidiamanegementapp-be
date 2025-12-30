@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import BaseResponse from '../../common/response/base.response';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -13,6 +14,7 @@ import { PaginationDto } from '../../common/dto/pagination.dto';
 import { RedisService } from '../redis/redis.service';
 import { ResponseSuccess } from '../../common/interface/response.interface';
 import { CreateUserDto, UpdateUserDto } from './dto/users.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { MailService } from '../mail/mail.service';
 import { HashUtil } from 'src/common/utils/hash.util';
 import * as crypto from 'crypto';
@@ -251,6 +253,56 @@ export class UsersService extends BaseResponse {
       throw new NotFoundException('Data Pengguna tidak ditemukan');
     }
     return this._success(`Berhasil update user dengan id ${id}`);
+  }
+
+  /**
+   * Change password for user
+   * Verifies current password before updating to new password
+   */
+  async changePassword(
+    userId: number,
+    payload: ChangePasswordDto,
+  ): Promise<ResponseSuccess> {
+    // Validate passwords match
+    if (payload.newPassword !== payload.confirmPassword) {
+      throw new BadRequestException(
+        'Konfirmasi kata sandi tidak cocok dengan kata sandi baru',
+      );
+    }
+
+    // Get user with password
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      select: ['id', 'password'],
+    });
+
+    if (!user) {
+      throw new NotFoundException('Pengguna tidak ditemukan');
+    }
+
+    // Verify current password
+    const isCurrentPasswordValid = await this.hashUtil.verifyPassword(
+      payload.currentPassword,
+      user.password,
+    );
+
+    if (!isCurrentPasswordValid) {
+      throw new BadRequestException('Kata sandi saat ini tidak benar');
+    }
+
+    // Hash new password
+    const hashedNewPassword = await this.hashUtil.hashPassword(
+      payload.newPassword,
+    );
+
+    // Update password
+    await this.userRepository.update(userId, {
+      password: hashedNewPassword,
+    });
+
+    this.logger.log(`✅ Password changed successfully for user ID: ${userId}`);
+
+    return this._success('Kata sandi berhasil diubah');
   }
 
   async delete(id: number): Promise<ResponseSuccess> {

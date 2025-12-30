@@ -9,6 +9,7 @@ import { NotificationRead } from './entities/notification-read.entity';
 import { Users } from '../users/entities/users.entity';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { RedisService } from '../redis/redis.service';
 
 @Module({
   imports: [
@@ -21,12 +22,14 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
         signOptions: { expiresIn: '1d' },
       }),
     }),
+    
   ],
   controllers: [NotificationsController],
   providers: [
     NotificationsService,
     NotificationsGateway,
     NotificationEventEmitter,
+    RedisService,
   ],
   exports: [
     NotificationsService,
