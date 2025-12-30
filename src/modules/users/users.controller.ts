@@ -7,6 +7,8 @@ import {
   Post,
   Put,
   Delete,
+  Request,
+  Body,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { JwtGuard } from '../auth/guards/auth.guard';
@@ -16,8 +18,12 @@ import { PermissionGuard } from '../auth/guards/permission.guard';
 import { RequirePermissions } from '../../common/decorator/permission.decorator';
 import { InjectCreatedBy } from '../../common/decorator/inject-createdBy.decorator';
 import { CreateUserDto, UpdateUserDto } from './dto/users.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { InjectUpdatedBy } from '../../common/decorator/inject-updatedBy.decorator';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 
+@ApiTags('Users')
+@ApiBearerAuth()
 @UseGuards(JwtGuard, PermissionGuard)
 @Controller('users')
 export class UsersController {
@@ -27,6 +33,20 @@ export class UsersController {
   @Get()
   async findAll(@Pagination() query: PaginationDto) {
     return this.userService.findAll(query);
+  }
+
+  /**
+   * Change password for current user
+   * ⚠️ IMPORTANT: This route MUST be defined BEFORE :id routes to avoid conflict
+   * No permission required - users can change their own password
+   */
+  @ApiOperation({ summary: 'Ubah kata sandi pengguna yang sedang login' })
+  @Put('change-password')
+  async changePassword(
+    @Request() req: { user: { id: number } },
+    @Body() payload: ChangePasswordDto,
+  ) {
+    return this.userService.changePassword(req.user.id, payload);
   }
 
   @RequirePermissions(`${Resource.USER}:${Action.VIEW}`)

@@ -257,11 +257,12 @@ export class NotificationsGateway
 
   /**
    * Emit notification to multiple users (PBAC-filtered)
+   * ✅ OPTIMIZED: Parallel delivery instead of sequential
    */
   async notifyMultipleUsers(userIds: number[], notification: Notification) {
-    for (const userId of userIds) {
-      await this.notifyUser(userId, notification);
-    }
+    await Promise.all(
+      userIds.map((userId) => this.notifyUser(userId, notification)),
+    );
   }
 
   /**
