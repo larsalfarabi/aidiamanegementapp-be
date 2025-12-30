@@ -24,6 +24,7 @@ class BaseResponse {
         total: total,
         page: page,
         pageSize: pageSize,
+        totalPages: Math.ceil(total / pageSize),
       },
     };
   }
