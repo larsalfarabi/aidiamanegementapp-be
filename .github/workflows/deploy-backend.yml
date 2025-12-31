@@ -1,0 +1,53 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches: ['main']
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Backend
+        run: bun run build
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to VPS
+        run: |
+          # Sync dist folder
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/id_ed25519" \
+            ./dist/ \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/root/aidiamanegementapp-be/dist/
+
+          # Sync package.json
+          rsync -avz \
+            -e "ssh -i ~/.ssh/id_ed25519" \
+            ./package.json \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/root/aidiamanegementapp-be/
+
+      - name: Restart PM2
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
+            cd /root/aidiamanegementapp-be && \
+            pm2 restart all || echo 'PM2 reload failed'
+            pm2 save
+          "

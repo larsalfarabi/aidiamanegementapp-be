@@ -2,7 +2,10 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsDateString, IsOptional } from 'class-validator';
 
 export class ProductionReportFilterDto {
-  @ApiProperty({ example: '2024-01-01', description: 'Start Date (YYYY-MM-DD)' })
+  @ApiProperty({
+    example: '2024-01-01',
+    description: 'Start Date (YYYY-MM-DD)',
+  })
   @IsDateString()
   startDate: string;
 
@@ -17,4 +20,12 @@ export class ProductionReportFilterDto {
   @ApiProperty({ required: false, description: 'Filter by Sub Category ID' })
   @IsOptional()
   subCategoryId?: number;
+
+  @ApiProperty({ required: false, description: 'Page number (default: 1)' })
+  @IsOptional()
+  page?: number;
+
+  @ApiProperty({ required: false, description: 'Items per page (default: 10)' })
+  @IsOptional()
+  pageSize?: number;
 }
