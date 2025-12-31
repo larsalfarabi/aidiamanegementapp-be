@@ -47,8 +47,10 @@ jobs:
       - name: Restart PM2
         run: |
           ssh -i ~/.ssh/id_ed25519 ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
-            source ~/.bashrc
+            # Dipaksa load Path Bun agar bunx jalan
+            export PATH=\$PATH:/root/.bun/bin
+
             cd /root/aidiamanegementapp-be && \
-            pm2 restart all || echo 'PM2 reload failed'
-            pm2 save
+            bunx pm2 restart all --update-env || echo 'PM2 reload failed'
+            bunx pm2 save
           "
