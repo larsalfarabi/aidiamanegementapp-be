@@ -47,6 +47,7 @@ jobs:
       - name: Restart PM2
         run: |
           ssh -i ~/.ssh/id_ed25519 ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
+            source ~/.bashrc
             cd /root/aidiamanegementapp-be && \
             pm2 restart all || echo 'PM2 reload failed'
             pm2 save
