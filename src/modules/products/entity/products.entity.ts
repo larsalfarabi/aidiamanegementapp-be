@@ -5,6 +5,7 @@ import { Users } from '../../users/entities/users.entity';
 export enum ProductType {
   RTD = 'RTD',
   CONC = 'CONC',
+  SYRUP = 'SYRUP',
 }
 @Entity({ synchronize: true })
 export class Products extends BaseEntity {

@@ -14,6 +14,11 @@ import { ProductSeeder } from './product.seed';
 import { ProductCategories } from '../../modules/products/entity/product_categories.entity';
 import { ProductSizes } from '../../modules/products/entity/product_sizes.entity';
 
+import { DailyInventorySeeder } from './daily-inventory.seed';
+import { DailyInventory } from '../../modules/inventory/entity/daily-inventory.entity';
+import { ProductCodes } from '../../modules/products/entity/product_codes.entity';
+import { Products } from '../../modules/products/entity/products.entity';
+
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -24,7 +29,16 @@ import { ProductSizes } from '../../modules/products/entity/product_sizes.entity
       username: process.env.DB_USERNAME || 'root',
       password: process.env.DB_PASSWORD || '',
       database: process.env.DB_DATABASE,
-      entities: [Users, Roles, Permissions, ProductCategories, ProductSizes],
+      entities: [
+        Users,
+        Roles,
+        Permissions,
+        ProductCategories,
+        ProductSizes,
+        DailyInventory,
+        ProductCodes,
+        Products,
+      ],
       synchronize: false, // Don't auto-create tables since they exist
       logging: false, // Reduce noise during seeding
     }),
@@ -34,6 +48,9 @@ import { ProductSizes } from '../../modules/products/entity/product_sizes.entity
       Roles,
       ProductCategories,
       ProductSizes,
+      DailyInventory,
+      ProductCodes,
+      Products,
     ]),
   ],
   providers: [
@@ -42,6 +59,7 @@ import { ProductSizes } from '../../modules/products/entity/product_sizes.entity
     RoleSeeder,
     PermissionSeeder,
     ProductSeeder,
+    DailyInventorySeeder,
   ],
 })
 export class SeederModule {}
