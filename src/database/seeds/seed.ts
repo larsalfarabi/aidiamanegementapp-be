@@ -4,6 +4,7 @@ import { PermissionSeeder } from './permission.seed';
 import { RoleSeeder } from './role.seed';
 import { UserSeeder } from './user.seed';
 import { ProductSeeder } from './product.seed';
+import { DailyInventorySeeder } from './daily-inventory.seed';
 
 async function bootstrap() {
   console.log('🌱 Starting Database Seeding Process...');
@@ -31,6 +32,10 @@ async function bootstrap() {
     const productSeeder = app.get(ProductSeeder);
     await productSeeder.run();
 
+    // 5. Initialize Daily Inventory (depends on products)
+    console.log('\n📊 Step 5: Initializing Daily Inventory...');
+    const dailyInventorySeeder = app.get(DailyInventorySeeder);
+    await dailyInventorySeeder.run();
 
     console.log('\n🎉 Database seeding completed successfully!');
     console.log('\n📊 Summary:');

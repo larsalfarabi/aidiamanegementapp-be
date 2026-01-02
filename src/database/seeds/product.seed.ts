@@ -173,6 +173,13 @@ export class ProductSeeder {
         categoryType: 'BARANG_JADI',
       },
       {
+        sizeValue: '750 ML',
+        unitOfMeasure: 'ML',
+        baseValue: 750,
+        baseUnit: 'ML',
+        categoryType: 'BARANG_JADI',
+      },
+      {
         sizeValue: '1 LITER',
         unitOfMeasure: 'LITER',
         baseValue: 1,
@@ -184,6 +191,20 @@ export class ProductSeeder {
         unitOfMeasure: 'LITER',
         baseValue: 5,
         baseUnit: 'LITER',
+        categoryType: 'BARANG_JADI',
+      },
+      {
+        sizeValue: '600 GRAM',
+        unitOfMeasure: 'GRAM',
+        baseValue: 600,
+        baseUnit: 'GRAM',
+        categoryType: 'BARANG_JADI',
+      },
+      {
+        sizeValue: '6 KG',
+        unitOfMeasure: 'KG',
+        baseValue: 6,
+        baseUnit: 'KG',
         categoryType: 'BARANG_JADI',
       },
 
