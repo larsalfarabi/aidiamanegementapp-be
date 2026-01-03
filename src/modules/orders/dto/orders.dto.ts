@@ -95,7 +95,9 @@ export class CreateOrderDto extends PickType(OrderDto, [
 export class UpdateOrderDto extends PickType(OrderDto, [
   'customerId',
   'orderDate',
+  'invoiceDate',
   'orderItems',
+  'customerNotes',
   'internalNotes',
   'updatedBy',
 ]) {}

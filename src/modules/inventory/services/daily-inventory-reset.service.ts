@@ -165,15 +165,46 @@ export class DailyInventoryResetService {
 
       // Check if we're trying to reset to a date that already exists
       if (previousBusinessDate === businessDate) {
-        // If manual trigger, throw error (prevent user from double-resetting)
-        // If cron trigger, just skip silently (reset already done today)
+        // Latest database record is already today - check if there's actually work to do
+        // This can happen if:
+        // 1. Cron ran successfully and user is re-running manually -> should skip
+        // 2. System was seeded with today's date directly -> no reset needed
+
         if (isManualTrigger) {
-          this.logger.warn(
-            `⚠️ Latest database record is already today (${businessDate}). Reset already completed.`,
+          // For manual trigger, check if there are any dates that need snapshots
+          const datesNeedingSnapshots = await queryRunner.query(
+            `
+            SELECT COUNT(DISTINCT di.businessDate) as count
+            FROM daily_inventory di
+            LEFT JOIN (
+              SELECT DISTINCT snapshotDate FROM daily_inventory_snapshots
+            ) dis ON di.businessDate = dis.snapshotDate
+            WHERE di.deletedAt IS NULL
+              AND di.isActive = 1
+              AND dis.snapshotDate IS NULL
+              AND di.businessDate < ?
+            `,
+            [businessDate],
           );
-          throw new Error(
-            `Reset already completed for ${businessDate}. Latest record in database matches today's date.`,
-          );
+
+          const needsSnapshot = datesNeedingSnapshots[0]?.count > 0;
+
+          if (needsSnapshot) {
+            this.logger.log(
+              `ℹ️ Found ${datesNeedingSnapshots[0].count} dates needing snapshots. Running bootstrap first...`,
+            );
+            // Don't throw error, let bootstrapSnapshots handle this
+            throw new Error(
+              `Reset already completed for ${businessDate}, but there are dates missing snapshots. Please run bootstrap-snapshots first: POST /api/inventory/admin/bootstrap-snapshots`,
+            );
+          } else {
+            this.logger.warn(
+              `⚠️ Latest database record is already today (${businessDate}). All snapshots exist. Reset already completed.`,
+            );
+            throw new Error(
+              `Reset already completed for ${businessDate}. Latest record in database matches today's date and all snapshots exist.`,
+            );
+          }
         } else {
           this.logger.log(
             `ℹ️ Reset already completed for ${businessDate}. Cron job skipping (idempotent behavior).`,
@@ -590,5 +621,156 @@ export class DailyInventoryResetService {
       latestInventory: latestInventory[0] || null,
       latestSnapshot: latestSnapshot[0] || null,
     };
+  }
+
+  /**
+   * Bootstrap Initial Snapshots
+   *
+   * Creates initial snapshots from existing daily_inventory data.
+   * Use this when:
+   * - Setting up system for the first time
+   * - Recovering from missing snapshots
+   * - Database has daily_inventory but no snapshots exist
+   *
+   * This method creates snapshots for each unique businessDate that doesn't
+   * already have snapshots, excluding today's date (today's data will be
+   * snapshot'd by the next cron run).
+   *
+   * @returns Object with success status and details
+   */
+  async bootstrapSnapshots(): Promise<{
+    success: boolean;
+    message: string;
+    details: {
+      datesProcessed: string[];
+      totalSnapshotsCreated: number;
+    };
+  }> {
+    this.logger.log(
+      '🔧 Bootstrap Snapshots: Creating initial snapshots from existing inventory...',
+    );
+
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    const datesProcessed: string[] = [];
+    let totalSnapshotsCreated = 0;
+
+    try {
+      const today = new Date();
+      const todayStr = this.formatDate(today);
+
+      // Get all unique business dates from daily_inventory that don't have snapshots
+      // Exclude today (today's data will be snapshot'd by cron)
+      const datesToSnapshot = await queryRunner.query(
+        `
+        SELECT DISTINCT di.businessDate
+        FROM daily_inventory di
+        LEFT JOIN (
+          SELECT DISTINCT snapshotDate FROM daily_inventory_snapshots
+        ) dis ON di.businessDate = dis.snapshotDate
+        WHERE di.deletedAt IS NULL
+          AND di.isActive = 1
+          AND dis.snapshotDate IS NULL
+          AND di.businessDate < ?
+        ORDER BY di.businessDate ASC
+        `,
+        [todayStr],
+      );
+
+      if (!datesToSnapshot || datesToSnapshot.length === 0) {
+        this.logger.log('ℹ️ No dates found that need snapshots.');
+        await queryRunner.commitTransaction();
+        return {
+          success: true,
+          message:
+            'No dates found that need snapshots. Either all dates already have snapshots or no historical data exists.',
+          details: {
+            datesProcessed: [],
+            totalSnapshotsCreated: 0,
+          },
+        };
+      }
+
+      this.logger.log(
+        `📅 Found ${datesToSnapshot.length} dates that need snapshots`,
+      );
+
+      // Create snapshots for each date
+      for (const row of datesToSnapshot) {
+        const businessDate = this.formatDate(new Date(row.businessDate));
+        this.logger.log(`📸 Creating snapshots for ${businessDate}...`);
+
+        const result = await queryRunner.query(
+          `
+          INSERT INTO daily_inventory_snapshots (
+            snapshotDate,
+            snapshotTime,
+            productCodeId,
+            stokAwal,
+            barangMasuk,
+            dipesan,
+            barangOutRepack,
+            barangOutSample,
+            barangOutProduksi,
+            stokAkhir,
+            createdAt
+          )
+          SELECT 
+            businessDate as snapshotDate,
+            '00:00:00' as snapshotTime,
+            productCodeId,
+            stokAwal,
+            barangMasuk,
+            dipesan,
+            barangOutRepack,
+            barangOutSample,
+            COALESCE(barangOutProduksi, 0) as barangOutProduksi,
+            stokAkhir,
+            CURRENT_TIMESTAMP as createdAt
+          FROM daily_inventory
+          WHERE businessDate = ?
+            AND isActive = 1
+            AND deletedAt IS NULL
+          `,
+          [businessDate],
+        );
+
+        const snapshotCount = result.affectedRows || 0;
+        totalSnapshotsCreated += snapshotCount;
+        datesProcessed.push(businessDate);
+        this.logger.log(
+          `✅ Created ${snapshotCount} snapshots for ${businessDate}`,
+        );
+      }
+
+      await queryRunner.commitTransaction();
+
+      const message = `Successfully created ${totalSnapshotsCreated} snapshots for ${datesProcessed.length} dates`;
+      this.logger.log(`✅ Bootstrap complete: ${message}`);
+
+      return {
+        success: true,
+        message,
+        details: {
+          datesProcessed,
+          totalSnapshotsCreated,
+        },
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error('❌ Bootstrap snapshots failed', error.stack);
+      return {
+        success: false,
+        message: `Bootstrap failed: ${error.message}`,
+        details: {
+          datesProcessed,
+          totalSnapshotsCreated,
+        },
+      };
+    } finally {
+      await queryRunner.release();
+    }
   }
 }

@@ -17,11 +17,14 @@ import {
   ResponseSuccess,
 } from '../../common/interface/response.interface';
 import { PaginationDto } from '../../common/dto/pagination.dto';
-import { CreateOrderDto, OrderFilterDto } from './dto/orders.dto';
+import {
+  CreateOrderDto,
+  OrderFilterDto,
+  UpdateOrderDto,
+} from './dto/orders.dto';
 import { InvoiceNumberGenerator } from './utils/invoice-number-generator';
 import { DeleteOrderDto } from './dto/orders.dto';
 import { InventoryTransactionService } from '../inventory/services/inventory-transaction.service';
-
 
 @Injectable()
 export class OrdersService extends BaseResponse {
@@ -122,7 +125,7 @@ export class OrdersService extends BaseResponse {
     // 2. Batch Fetch ProductCodes
     const productCodes = await this.productCodesRepo.find({
       where: { id: In(productCodeIds), isActive: true },
-      relations: ['product', 'category', 'size'],
+      relations: ['product', 'product.category', 'category', 'size'],
       select: {
         id: true,
         productCode: true,
@@ -132,10 +135,10 @@ export class OrdersService extends BaseResponse {
           name: true,
           productType: true,
           imageUrl: true,
-        },
-        category: {
-          id: true,
-          name: true,
+          category: {
+            id: true,
+            name: true,
+          },
         },
         size: {
           id: true,
@@ -223,10 +226,12 @@ export class OrdersService extends BaseResponse {
 
       let productName = 'Unknown Product';
 
-      if (product && category && size) {
+      if (product && size) {
+        // ✅ Use subCategory from Products.category, not mainCategory from ProductCodes.category
+        const subCategory = product.category?.name;
         const baseName = [
           product.name || '',
-          category.name || '',
+          subCategory,
           product.productType || '',
         ]
           .filter(Boolean)
@@ -653,13 +658,21 @@ export class OrdersService extends BaseResponse {
 
     const isSameDayOrder = invoiceDateOnly.getTime() === today.getTime();
 
+    // ✅ DETAILED LOGGING for debugging
+    this.logger.log(
+      `[ORDER DELETE ${order.orderNumber}] Invoice Date: ${invoiceDateOnly.toISOString()}, Today: ${today.toISOString()}, isSameDayOrder: ${isSameDayOrder}`,
+    );
+
     if (isSameDayOrder) {
       // ✅ SAME-DAY ORDER: Reverse inventory transaction
       this.logger.log(
-        `[ORDER ${order.orderNumber}] Same-day order - reversing inventory transactions`,
+        `[ORDER ${order.orderNumber}] Same-day order - reversing inventory transactions for ${order.orderItems.length} items`,
       );
 
       for (const orderItem of order.orderItems) {
+        this.logger.log(
+          `[ORDER ${order.orderNumber}] Reversing item: productCodeId=${orderItem.productCodeId}, quantity=${orderItem.quantity}`,
+        );
         try {
           await this.inventoryTransactionService.reverseSale(
             order.id,
@@ -669,22 +682,25 @@ export class OrdersService extends BaseResponse {
             `Order ${order.orderNumber} cancelled/deleted`,
             order.invoiceDate, // ✅ CRITICAL: Pass invoice date to reverse correct daily_inventory
           );
-        } catch (error) {
-          // Log error but continue with deletion
-          console.error(
-            `[ORDER ${order.orderNumber}] Failed to reverse inventory transaction for product ${orderItem.productCodeId}:`,
-            error.message,
+          this.logger.log(
+            `[ORDER ${order.orderNumber}] Successfully reversed inventory for product ${orderItem.productCodeId}`,
           );
-          // In production, you might want to:
-          // 1. Alert admin about inventory inconsistency
-          // 2. Create manual adjustment task
-          // Note: We continue with soft delete even if reversal fails
+        } catch (error) {
+          // ✅ Log error with full details and THROW to prevent silent failure
+          this.logger.error(
+            `[ORDER ${order.orderNumber}] FAILED to reverse inventory for product ${orderItem.productCodeId}: ${error.message}`,
+            error.stack,
+          );
+          // ✅ CRITICAL: Throw error to prevent order deletion without inventory reversal
+          throw new BadRequestException(
+            `Gagal membalikkan transaksi inventory untuk produk ${orderItem.productCodeId}: ${error.message}. Order tidak bisa dihapus.`,
+          );
         }
       }
     } else {
       // ✅ FUTURE-DATED ORDER: No need to reverse (was never reserved)
       this.logger.log(
-        `[ORDER ${order.orderNumber}] Future-dated order - no inventory reversal needed`,
+        `[ORDER ${order.orderNumber}] Future-dated order (invoice: ${invoiceDateOnly.toISOString()}) - no inventory reversal needed`,
       );
     }
 
@@ -708,5 +724,324 @@ export class OrdersService extends BaseResponse {
     // [ROLLED BACK] Emit notification disabled
 
     return this._success(`Data pesanan dengan ID ${id} berhasil dihapus.`);
+  }
+
+  /**
+   * Update order (same-day only)
+   * ✅ Only allows editing orders with invoiceDate >= today
+   */
+  async updateOrder(
+    id: number,
+    updateOrderDto: UpdateOrderDto,
+  ): Promise<ResponseSuccess> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // 1. Fetch existing order
+      const existingOrder = await this.ordersRepo.findOne({
+        where: { id },
+        relations: ['orderItems', 'customer'],
+      });
+
+      if (!existingOrder || existingOrder.isDeleted) {
+        throw new NotFoundException('Order tidak ditemukan');
+      }
+
+      // 2. Validation for editing orders
+      // - Same-day orders: can edit freely
+      // - Past orders: can only update if NEW invoice date >= today
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const currentInvoiceDate = new Date(existingOrder.invoiceDate);
+      currentInvoiceDate.setHours(0, 0, 0, 0);
+
+      const isOriginalPast = currentInvoiceDate < today;
+
+      // Parse new invoice date from DTO
+      const newInvoiceDateFromDto = updateOrderDto.invoiceDate
+        ? new Date(updateOrderDto.invoiceDate)
+        : currentInvoiceDate;
+      newInvoiceDateFromDto.setHours(0, 0, 0, 0);
+
+      // Validation: Past orders can only be updated if new invoice >= today
+      if (isOriginalPast) {
+        if (newInvoiceDateFromDto < today) {
+          throw new BadRequestException(
+            `Order dengan invoice tanggal ${currentInvoiceDate.toLocaleDateString('id-ID')} hanya dapat diubah ke tanggal hari ini atau masa depan. Tidak dapat mengubah ke tanggal lampau.`,
+          );
+        }
+        this.logger.log(
+          `[ORDER UPDATE ${existingOrder.orderNumber}] Past order detected (${currentInvoiceDate.toLocaleDateString('id-ID')}). Allowing update to ${newInvoiceDateFromDto.toLocaleDateString('id-ID')}.`,
+        );
+      }
+
+      // 3. Handle Customer Change
+      // ✅ FIX: Always fetch and update customer data when customerId is provided
+      // This ensures customer data is always fresh and handles type coercion issues
+      let customer = existingOrder.customer!;
+
+      const dtoCustomerId = updateOrderDto.customerId
+        ? Number(updateOrderDto.customerId)
+        : null;
+      const existingCustomerId = Number(existingOrder.customerId);
+
+      // ✅ FIX: Always update customer if customerId is provided
+      if (dtoCustomerId) {
+        const newCustomer = await queryRunner.manager.findOne(Customers, {
+          where: { id: dtoCustomerId, isActive: true },
+        });
+
+        if (!newCustomer) {
+          throw new NotFoundException(
+            `Customer dengan ID ${dtoCustomerId} tidak ditemukan atau tidak aktif`,
+          );
+        }
+
+        customer = newCustomer;
+        // ✅ FIX: Must set BOTH the relation object AND the column
+        // TypeORM uses the relation to determine customerId on save
+        existingOrder.customer = newCustomer; // Set relation object (CRITICAL!)
+        existingOrder.customerId = newCustomer.id; // Set column (for consistency)
+        existingOrder.customerCode = newCustomer.customerCode;
+        existingOrder.customerName = newCustomer.customerName;
+        existingOrder.customerAddress = newCustomer.address;
+        existingOrder.taxPercentage = newCustomer.taxType === 'PPN' ? 11 : 0;
+
+        this.logger.log(
+          `[ORDER UPDATE ${existingOrder.orderNumber}] Customer set to: ${newCustomer.customerName} (${newCustomer.customerCode}), ID: ${newCustomer.id}`,
+        );
+      }
+
+      // 3b. Handle Order Date Change
+      if (updateOrderDto.orderDate) {
+        existingOrder.orderDate = new Date(updateOrderDto.orderDate);
+      }
+
+      // 4. Handle Invoice Date Change
+      if (updateOrderDto.invoiceDate) {
+        const newInvoiceDate = new Date(updateOrderDto.invoiceDate);
+        const oldInvoiceDate = new Date(existingOrder.invoiceDate);
+
+        // Update if date changed
+        if (newInvoiceDate.getTime() !== oldInvoiceDate.getTime()) {
+          existingOrder.invoiceDate = newInvoiceDate;
+
+          // Check if month/year changed to regenerate invoice number
+          if (
+            newInvoiceDate.getMonth() !== oldInvoiceDate.getMonth() ||
+            newInvoiceDate.getFullYear() !== oldInvoiceDate.getFullYear()
+          ) {
+            const newInvoiceNumber =
+              await this.generateInvoiceNumber(newInvoiceDate);
+            existingOrder.invoiceNumber = newInvoiceNumber;
+          }
+        }
+      }
+
+      // 5. Reverse old inventory transactions
+      const userId =
+        typeof updateOrderDto.updatedBy === 'object'
+          ? updateOrderDto.updatedBy.id
+          : updateOrderDto.updatedBy;
+
+      if (!userId) {
+        throw new BadRequestException('User ID is required for updating order');
+      }
+
+      // ✅ FIX: Use local timezone for date comparison
+      // Create dates using local timezone parts to avoid UTC issues
+      const todayLocal = new Date();
+      const todayMidnight = new Date(
+        todayLocal.getFullYear(),
+        todayLocal.getMonth(),
+        todayLocal.getDate(),
+        0,
+        0,
+        0,
+        0,
+      );
+
+      const originalInvoiceLocal = new Date(existingOrder.invoiceDate);
+      const originalInvoiceMidnight = new Date(
+        originalInvoiceLocal.getFullYear(),
+        originalInvoiceLocal.getMonth(),
+        originalInvoiceLocal.getDate(),
+        0,
+        0,
+        0,
+        0,
+      );
+
+      // ✅ FIX: Use isOriginalPast flag that was calculated BEFORE invoice date was updated
+      // isOriginalPast is true if original invoice was before today
+      // We should only reverse if original invoice was TODAY (not past)
+      const shouldReverseInventory = !isOriginalPast;
+
+      this.logger.log(
+        `[ORDER UPDATE ${existingOrder.orderNumber}] Today: ${todayMidnight.toISOString()}, isOriginalPast: ${isOriginalPast}, shouldReverseInventory: ${shouldReverseInventory}`,
+      );
+
+      // 5. Reverse old inventory transactions
+      // ✅ ONLY reverse if original invoice is TODAY (same-day)
+      // ❌ Skip reversal for PAST orders (inventory already snapshotted)
+      if (shouldReverseInventory) {
+        if (existingOrder.orderItems && existingOrder.orderItems.length > 0) {
+          this.logger.log(
+            `[ORDER UPDATE ${existingOrder.orderNumber}] Reversing ${existingOrder.orderItems.length} old items inventory (same-day order)`,
+          );
+
+          for (const oldItem of existingOrder.orderItems) {
+            try {
+              await this.inventoryTransactionService.reverseSale(
+                existingOrder.id,
+                oldItem.productCodeId,
+                oldItem.quantity,
+                userId,
+                `Order ${existingOrder.orderNumber} updated - reversing old item`,
+                originalInvoiceMidnight,
+              );
+            } catch (error) {
+              this.logger.error(
+                `[ORDER UPDATE ${existingOrder.orderNumber}] Failed to reverse inventory for product ${oldItem.productCodeId}: ${error.message}`,
+                error.stack,
+              );
+              // ✅ Still throw error to prevent partial update
+              throw new BadRequestException(
+                `Gagal membalikkan inventory untuk produk ${oldItem.productCodeId}: ${error.message}`,
+              );
+            }
+          }
+        }
+      } else {
+        // Past order - return old items to TODAY's inventory via barangMasuk
+        // Since past inventory is snapshotted, we can't reverse it
+        // Instead, we add the quantity back as incoming goods for today
+        this.logger.log(
+          `[ORDER UPDATE ${existingOrder.orderNumber}] 📦 Returning ${existingOrder.orderItems?.length || 0} old items to today's inventory (original date: ${originalInvoiceMidnight.toLocaleDateString('id-ID')})`,
+        );
+
+        if (existingOrder.orderItems && existingOrder.orderItems.length > 0) {
+          for (const oldItem of existingOrder.orderItems) {
+            try {
+              await this.inventoryTransactionService.returnStockFromCancelledOrder(
+                existingOrder.id,
+                oldItem.productCodeId,
+                oldItem.quantity,
+                userId,
+                existingOrder.orderNumber,
+                originalInvoiceMidnight,
+              );
+            } catch (error) {
+              this.logger.error(
+                `[ORDER UPDATE ${existingOrder.orderNumber}] ❌ Failed to return stock for product ${oldItem.productCodeId}: ${error.message}`,
+                error.stack,
+              );
+              throw new BadRequestException(
+                `Gagal mengembalikan stok untuk produk ${oldItem.productCodeId}: ${error.message}`,
+              );
+            }
+          }
+        }
+      }
+
+      // 6. Delete old order items
+      await queryRunner.manager.delete(OrderItems, { orderId: id });
+
+      // 7. Calculate new pricing
+      const { items, subtotal, taxAmount, grandTotal } =
+        await this.calculateOrderPricing(
+          customer.id,
+          updateOrderDto.orderItems,
+          customer,
+        );
+
+      // 8. Update order totals
+      existingOrder.subtotal = subtotal;
+      existingOrder.taxAmount = taxAmount;
+      existingOrder.grandTotal = grandTotal;
+      existingOrder.remainingAmount = grandTotal - existingOrder.paidAmount;
+      existingOrder.customerNotes =
+        updateOrderDto.customerNotes || existingOrder.customerNotes;
+      existingOrder.internalNotes =
+        updateOrderDto.internalNotes || existingOrder.internalNotes;
+      existingOrder.updatedBy = updateOrderDto.updatedBy as any;
+      existingOrder.orderItems = []; // Prevent re-saving deleted items due to cascade
+
+      await queryRunner.manager.save(Orders, existingOrder);
+
+      // 9. Create new order items
+      for (const item of items) {
+        const orderItem = this.orderItemsRepo.create({
+          orderId: id,
+          ...item,
+        });
+        await queryRunner.manager.save(OrderItems, orderItem);
+      }
+
+      // 10. Record new inventory transactions
+      // ✅ FIX: Use local timezone for new invoice date check
+      const newInvoiceLocal = new Date(existingOrder.invoiceDate);
+      const newInvoiceMidnight = new Date(
+        newInvoiceLocal.getFullYear(),
+        newInvoiceLocal.getMonth(),
+        newInvoiceLocal.getDate(),
+        0,
+        0,
+        0,
+        0,
+      );
+      const isNewSameDay =
+        newInvoiceMidnight.getTime() === todayMidnight.getTime();
+
+      this.logger.log(
+        `[ORDER UPDATE ${existingOrder.orderNumber}] NewInvoice: ${newInvoiceMidnight.toISOString()}, isNewSameDay: ${isNewSameDay}`,
+      );
+
+      if (isNewSameDay) {
+        for (const item of items) {
+          try {
+            await this.inventoryTransactionService.recordSale(
+              {
+                productCodeId: item.productCodeId,
+                quantity: item.quantity,
+                orderId: id,
+                invoiceDate: newInvoiceMidnight,
+                notes: `Order ${existingOrder.orderNumber} updated`,
+              },
+              userId,
+              queryRunner.manager,
+            );
+          } catch (error) {
+            this.logger.error(
+              `[ORDER UPDATE ${existingOrder.orderNumber}] Failed to record inventory for product ${item.productCodeId}: ${error.message}`,
+              error.stack,
+            );
+            throw new BadRequestException(
+              `Failed to reserve inventory for product ${item.productName}: ${error.message}`,
+            );
+          }
+        }
+      } else {
+        this.logger.log(
+          `[ORDER UPDATE ${existingOrder.orderNumber}] No inventory recording needed (future date)`,
+        );
+      }
+
+      // 11. Commit Transaction
+      await queryRunner.commitTransaction();
+
+      // 12. Return updated order
+      const updatedOrder = await this.findOne(id);
+      return this._success('Order berhasil diperbarui', updatedOrder.data);
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error('Failed to update order', error);
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
   }
 }

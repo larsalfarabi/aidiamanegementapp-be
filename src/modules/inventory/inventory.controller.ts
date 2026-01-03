@@ -485,6 +485,25 @@ export class InventoryController {
     return this.dailyResetService.checkInventoryDates();
   }
 
+  /**
+   * POST /inventory/admin/bootstrap-snapshots - Create initial snapshots from existing inventory
+   *
+   * Use this endpoint when:
+   * - Setting up system for the first time
+   * - Recovering from missing snapshots
+   * - Database has daily_inventory but no snapshots exist
+   *
+   * This creates snapshots for all dates that have daily_inventory records
+   * but don't have corresponding snapshots (excluding today).
+   *
+   * After running this, you can use trigger-reset to perform the daily reset.
+   */
+  @Post('admin/bootstrap-snapshots')
+  @HttpCode(HttpStatus.OK)
+  async bootstrapSnapshots() {
+    return this.dailyResetService.bootstrapSnapshots();
+  }
+
   // ==================== STOCK VALIDATION ====================
 
   /**

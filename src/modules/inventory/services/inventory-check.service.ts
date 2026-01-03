@@ -95,15 +95,8 @@ export class InventoryCheckService {
           });
           outOfStockCount++;
         } else {
-          // CRITICAL: Low Stock
-          await this.notificationEventEmitter.emitStockLow({
-            productId: productCode.id,
-            productCode: productCode.productCode,
-            productName: productCode.product?.name || 'Unknown',
-            currentStock: item.stokAkhir,
-            minStock: item.minimumStock || 0,
-            category: productCode.category?.name || 'Unknown',
-          });
+          // NOTE: Low stock notification disabled - too spammy when many products are low
+          // await this.notificationEventEmitter.emitStockLow(...);
           lowStockCount++;
         }
       }
@@ -174,14 +167,8 @@ export class InventoryCheckService {
         });
         outOfStockCount++;
       } else {
-        await this.notificationEventEmitter.emitStockLow({
-          productId: productCode.id,
-          productCode: productCode.productCode,
-          productName: productCode.product?.name || 'Unknown',
-          currentStock: item.stokAkhir,
-          minStock: item.minimumStock || 0,
-          category: productCode.category?.name || 'Unknown',
-        });
+        // NOTE: Low stock notification disabled - too spammy when many products are low
+        // await this.notificationEventEmitter.emitStockLow(...);
         lowStockCount++;
       }
     }
