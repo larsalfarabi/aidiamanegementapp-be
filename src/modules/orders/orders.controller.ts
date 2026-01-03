@@ -9,7 +9,11 @@ import {
   Delete,
 } from '@nestjs/common';
 import { OrdersService } from './orders.service';
-import { CreateOrderDto, OrderFilterDto } from './dto/orders.dto';
+import {
+  CreateOrderDto,
+  OrderFilterDto,
+  UpdateOrderDto,
+} from './dto/orders.dto';
 import { Pagination } from '../../common/decorator/pagination.decorator';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { JwtGuard } from '../auth/guards/auth.guard';
@@ -17,6 +21,7 @@ import { PermissionGuard } from '../auth/guards/permission.guard';
 import { RequirePermissions } from '../../common/decorator/permission.decorator';
 import { Resource, Action } from '../../common/enums/resource.enum';
 import { InjectCreatedBy } from '../../common/decorator/inject-createdBy.decorator';
+import { InjectUpdatedBy } from '../../common/decorator/inject-updatedBy.decorator';
 import { InjectDeletedBy } from '../../common/decorator/inject-deletedBy.decorator';
 import { DeleteOrderDto } from './dto/orders.dto';
 
@@ -74,6 +79,18 @@ export class OrdersController {
     @Pagination() query: PaginationDto,
   ) {
     return this.ordersService.getCustomerOrderHistory(+customerId, query);
+  }
+
+  /**
+   * Update order (same-day only)
+   */
+  @Patch(':id')
+  @RequirePermissions(`${Resource.ORDER}:${Action.UPDATE}`)
+  async update(
+    @Param('id') id: string,
+    @InjectUpdatedBy() updateOrderDto: UpdateOrderDto,
+  ) {
+    return this.ordersService.updateOrder(+id, updateOrderDto);
   }
 
   @Delete(':id')

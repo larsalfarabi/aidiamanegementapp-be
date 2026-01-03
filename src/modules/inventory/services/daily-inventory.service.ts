@@ -73,6 +73,7 @@ export class DailyInventoryService extends BaseResponse {
       stockStatus,
       isActive,
       mainCategory,
+      search,
       page = 1,
       pageSize = 10,
     } = query;
@@ -86,6 +87,14 @@ export class DailyInventoryService extends BaseResponse {
       .leftJoinAndSelect('product.category', 'subCat') // SWAPPED: product.category = Sub Category (level 1)
       .where('di.businessDate = :businessDate', { businessDate: businessDate })
       .andWhere('di.deletedAt IS NULL');
+
+    // Filter by search (product name or code)
+    if (search) {
+      queryBuilder.andWhere(
+        '(LOWER(pc.productCode) LIKE :search OR LOWER(product.name) LIKE :search)',
+        { search: `%${search.toLowerCase()}%` },
+      );
+    }
 
     // Filter by productCodeId
     if (productCodeId) {

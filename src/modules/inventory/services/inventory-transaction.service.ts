@@ -44,7 +44,6 @@ import {
 import { FilterTransactionsDto } from '../dto/filter-transactions.dto';
 import { AdjustStockDto } from '../dto/adjust-stock.dto';
 
-
 /**
  * InventoryTransactionService
  *
@@ -85,7 +84,6 @@ export class InventoryTransactionService extends BaseResponse {
     private readonly productCodesRepo: Repository<ProductCodes>,
 
     private readonly dataSource: DataSource,
-
   ) {
     super();
   }
@@ -209,8 +207,6 @@ export class InventoryTransactionService extends BaseResponse {
       this.logger.log(
         `Production recorded: Product ${dto.productCodeId}, Qty ${dto.quantity}, Batch ${dto.productionBatchNumber}`,
       );
-
-
 
       return this._success('Production recorded successfully', {
         dailyInventory: updatedInventory,
@@ -621,47 +617,101 @@ export class InventoryTransactionService extends BaseResponse {
         throw new NotFoundException(`Product code ${productCodeId} not found`);
       }
 
-      // ✅ Use invoiceDate if provided, otherwise use today
-      const targetDate = invoiceDate
-        ? this.formatDate(new Date(invoiceDate))
-        : this.formatDate(new Date());
-      const businessDate = new Date(targetDate);
+      // ✅ FIX: Use local timezone date parts to avoid UTC conversion issues
+      const invoiceDateObj = invoiceDate ? new Date(invoiceDate) : new Date();
+
+      // Create date in local timezone at midnight
+      const businessDate = new Date(
+        invoiceDateObj.getFullYear(),
+        invoiceDateObj.getMonth(),
+        invoiceDateObj.getDate(),
+        0,
+        0,
+        0,
+        0,
+      );
+
+      const targetDateStr = this.formatDate(invoiceDateObj);
+
+      this.logger.log(
+        `[REVERSE SALE] Looking for dailyInventory: productCodeId=${productCodeId}, businessDate=${businessDate.toISOString()}, targetDateStr=${targetDateStr}`,
+      );
 
       // Get daily inventory for the business date
       const dailyInventory = await queryRunner.manager.findOne(DailyInventory, {
         where: {
           productCodeId: productCodeId,
-          businessDate: businessDate, // ✅ Use invoice date, not today
+          businessDate: businessDate,
         },
       });
 
+      let currentStock = 0;
+
+      // ✅ RESILIENT: If daily_inventory doesn't exist, log warning but continue
       if (!dailyInventory) {
-        throw new NotFoundException(
-          `Daily inventory for product ${productCodeId} not found for date ${targetDate}`,
+        this.logger.warn(
+          `[REVERSE SALE] Daily inventory for product ${productCodeId} not found for date ${targetDateStr}. Creating CANCELLED transaction anyway for audit trail.`,
+        );
+        // Set currentStock to 0 since we don't have inventory data
+        currentStock = 0;
+      } else {
+        // Check if dipesan is sufficient
+        // Use nullish coalescing to handle null values
+        const originalDipesan = dailyInventory.dipesan ?? 0;
+        this.logger.log(
+          `[REVERSE SALE] Before update - productCodeId: ${productCodeId}, originalDipesan: ${originalDipesan}, quantity to reverse: ${quantity}`,
+        );
+
+        if (originalDipesan < quantity) {
+          this.logger.warn(
+            `[REVERSE SALE] Cannot fully reverse. Current dipesan (${originalDipesan}) is less than quantity (${quantity}). Setting dipesan to 0.`,
+          );
+          // Set dipesan to 0 instead of going negative
+          dailyInventory.dipesan = 0;
+        } else {
+          // Update daily inventory: decrement dipesan
+          dailyInventory.dipesan = originalDipesan - quantity;
+        }
+
+        this.logger.log(
+          `[REVERSE SALE] After calculation - newDipesan: ${dailyInventory.dipesan}`,
+        );
+
+        dailyInventory.updatedBy = userId;
+        const savedInventory = await queryRunner.manager.save(
+          DailyInventory,
+          dailyInventory,
+        );
+
+        this.logger.log(
+          `[REVERSE SALE] After save - savedDipesan: ${savedInventory.dipesan}, inventoryId: ${savedInventory.id}`,
+        );
+
+        // Calculate balance after
+        // Use parseFloat to handle string/decimal values from database, and ensure no NaN
+        const stokAwal = parseFloat(String(dailyInventory.stokAwal)) || 0;
+        const barangMasuk = parseFloat(String(dailyInventory.barangMasuk)) || 0;
+        const dipesan = parseFloat(String(dailyInventory.dipesan)) || 0;
+        const barangOutRepack =
+          parseFloat(String(dailyInventory.barangOutRepack)) || 0;
+        const barangOutSample =
+          parseFloat(String(dailyInventory.barangOutSample)) || 0;
+
+        currentStock =
+          stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample;
+
+        // Ensure currentStock is never NaN
+        if (isNaN(currentStock)) {
+          this.logger.warn(
+            `[REVERSE SALE] currentStock is NaN, setting to 0. Values: stokAwal=${stokAwal}, barangMasuk=${barangMasuk}, dipesan=${dipesan}`,
+          );
+          currentStock = 0;
+        }
+
+        this.logger.log(
+          `[REVERSE SALE] Calculated currentStock: ${currentStock}`,
         );
       }
-
-      // Check if dipesan is sufficient
-      // Use nullish coalescing to handle null values
-      if ((dailyInventory.dipesan ?? 0) < quantity) {
-        throw new BadRequestException(
-          `Cannot reverse sale. Current dipesan (${dailyInventory.dipesan ?? 0}) is less than quantity (${quantity})`,
-        );
-      }
-
-      // Update daily inventory: decrement dipesan
-      dailyInventory.dipesan = (dailyInventory.dipesan ?? 0) - quantity;
-      dailyInventory.updatedBy = userId;
-      await queryRunner.manager.save(DailyInventory, dailyInventory);
-
-      // Calculate balance after
-      // Use nullish coalescing to handle null values from database
-      const currentStock =
-        (dailyInventory.stokAwal ?? 0) +
-        (dailyInventory.barangMasuk ?? 0) -
-        (dailyInventory.dipesan ?? 0) -
-        (dailyInventory.barangOutRepack ?? 0) -
-        (dailyInventory.barangOutSample ?? 0);
 
       // Generate transaction number
       const transactionNumber = await this.generateTransactionNumber(
@@ -669,7 +719,7 @@ export class InventoryTransactionService extends BaseResponse {
         'TRX',
       );
 
-      // Create reversal transaction record
+      // Create reversal transaction record (ALWAYS create for audit trail)
       const transaction = new InventoryTransactions();
       transaction.transactionNumber = transactionNumber;
       transaction.transactionDate = new Date();
@@ -681,24 +731,26 @@ export class InventoryTransactionService extends BaseResponse {
       transaction.orderId = orderId;
       transaction.status = TransactionStatus.CANCELLED; // Mark as CANCELLED
       transaction.reason = reason || 'Order cancelled/deleted';
-      transaction.notes = `Reversal of order ${orderId}`;
+      transaction.notes = dailyInventory
+        ? `Reversal of order ${orderId}`
+        : `Reversal of order ${orderId} (no daily inventory record)`;
       transaction.createdBy = userId;
 
       const savedTransaction = await queryRunner.manager.save(transaction);
 
-      // Reload inventory
-      const updatedInventory = await queryRunner.manager.findOne(
-        DailyInventory,
-        {
+      // Reload inventory if exists
+      let updatedInventory = null;
+      if (dailyInventory) {
+        updatedInventory = await queryRunner.manager.findOne(DailyInventory, {
           where: { id: dailyInventory.id },
           relations: ['productCode', 'productCode.product'],
-        },
-      );
+        });
+      }
 
       await queryRunner.commitTransaction();
 
       this.logger.log(
-        `Sale reversed: Product ${productCodeId}, Qty ${quantity}, Order ${orderId}`,
+        `Sale reversed: Product ${productCodeId}, Qty ${quantity}, Order ${orderId}${!dailyInventory ? ' (no daily inventory)' : ''}`,
       );
 
       return this._success('Sale reversal recorded successfully', {
@@ -708,6 +760,109 @@ export class InventoryTransactionService extends BaseResponse {
     } catch (error) {
       await queryRunner.rollbackTransaction();
       this.logger.error('Failed to reverse sale', error);
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  /**
+   * Return stock from cancelled/updated past order
+   * Used when a past order is updated to today - old items are "returned" to today's inventory
+   * Updates: daily_inventory.barangMasuk++ (for TODAY)
+   * Creates: inventory_transactions record with SALE_RETURN type (status CANCELLED)
+   *
+   * This is different from reverseSale which decrements dipesan.
+   * Since past inventory is snapshotted, we can't modify it.
+   * Instead, we add the quantity back as incoming goods (barangMasuk) for today.
+   */
+  async returnStockFromCancelledOrder(
+    orderId: number,
+    productCodeId: number,
+    quantity: number,
+    userId: number,
+    orderNumber: string,
+    originalInvoiceDate: Date,
+  ): Promise<ResponseSuccess> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // 1. Get today's date for the return
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      // 2. Get or create today's daily_inventory
+      const dailyInventory = await this.getOrCreateDailyInventory(
+        queryRunner,
+        productCodeId,
+        today,
+        userId,
+      );
+
+      // 3. Calculate current stock
+      const stokAwal = parseFloat(String(dailyInventory.stokAwal)) || 0;
+      const barangMasuk = parseFloat(String(dailyInventory.barangMasuk)) || 0;
+      const dipesan = parseFloat(String(dailyInventory.dipesan)) || 0;
+      const barangOutRepack =
+        parseFloat(String(dailyInventory.barangOutRepack)) || 0;
+      const barangOutSample =
+        parseFloat(String(dailyInventory.barangOutSample)) || 0;
+
+      const currentStock =
+        stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample;
+
+      // 4. Calculate new barangMasuk
+      const newBarangMasuk = barangMasuk + quantity;
+      const balanceAfter = currentStock + quantity;
+
+      // 5. Update daily inventory
+      dailyInventory.barangMasuk = newBarangMasuk;
+      await queryRunner.manager.save(DailyInventory, dailyInventory);
+
+      // 6. Generate transaction number
+      const transactionNumber = await this.generateTransactionNumber(
+        queryRunner,
+        'TRX',
+      );
+
+      // 7. Create cancellation transaction record
+      const transaction = queryRunner.manager.create(InventoryTransactions, {
+        transactionNumber,
+        transactionType: TransactionType.SALE,
+        transactionDate: today,
+        businessDate: today,
+        productCodeId,
+        quantity: quantity,
+        balanceAfter,
+        notes: `Pengembalian stok dari update order ${orderNumber} (invoice asal: ${originalInvoiceDate.toLocaleDateString('id-ID')})`,
+        status: TransactionStatus.CANCELLED,
+        orderId,
+        createdBy: userId,
+      });
+
+      await queryRunner.manager.save(InventoryTransactions, transaction);
+
+      // 8. Commit transaction
+      await queryRunner.commitTransaction();
+
+      this.logger.log(
+        `[RETURN STOCK] ${transactionNumber} | Product ${productCodeId} | Qty ${quantity} | Order ${orderNumber}`,
+      );
+
+      return this._success('Stock berhasil dikembalikan', {
+        transaction,
+        dailyInventory,
+        newBarangMasuk,
+        balanceAfter,
+      });
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error(
+        `[RETURN STOCK] ❌ Failed: ${error.message}`,
+        error.stack,
+      );
       throw error;
     } finally {
       await queryRunner.release();
@@ -1404,7 +1559,8 @@ export class InventoryTransactionService extends BaseResponse {
    * Format: {prefix}-YYYYMMDD-{sequence}
    * Example: TRX-20250115-001, SMP-20250115-002, RPK-20250115-001
    *
-   * Uses MAX + 1 approach with proper ordering to handle concurrent requests
+   * ✅ FIXED: Uses raw SQL with FOR UPDATE to lock the row during sequence calculation
+   * This ensures uniqueness even when multiple records are created in the same transaction
    */
   private async generateTransactionNumber(
     queryRunner: any,
@@ -1414,56 +1570,70 @@ export class InventoryTransactionService extends BaseResponse {
     const dateStr = today.toISOString().split('T')[0].replace(/-/g, '');
     const pattern = `${prefix}-${dateStr}-%`;
 
-    // Get the latest sequence number for today using MAX + substring
+    // Use raw SQL with FOR UPDATE to lock the max sequence row
+    // This ensures atomic sequence generation even in concurrent scenarios
     let maxSequence = 0;
+    let tableName = '';
+    let columnName = '';
 
     if (prefix === 'TRX') {
-      const result = await queryRunner.manager
-        .createQueryBuilder(InventoryTransactions, 'trx')
-        .select(
-          'MAX(CAST(SUBSTRING(trx.transactionNumber, -3) AS UNSIGNED))',
-          'maxSeq',
-        )
-        .where('trx.transactionNumber LIKE :pattern', { pattern })
-        .andWhere('trx.deletedAt IS NULL')
-        .getRawOne();
-
-      maxSequence = result?.maxSeq ? parseInt(result.maxSeq, 10) : 0;
+      tableName = 'inventory_transactions';
+      columnName = 'transactionNumber';
     } else if (prefix === 'SMP') {
-      const result = await queryRunner.manager
-        .createQueryBuilder(SampleTracking, 'smp')
-        .select(
-          'MAX(CAST(SUBSTRING(smp.sampleNumber, -3) AS UNSIGNED))',
-          'maxSeq',
-        )
-        .where('smp.sampleNumber LIKE :pattern', { pattern })
-        .andWhere('smp.deletedAt IS NULL')
-        .getRawOne();
-
-      maxSequence = result?.maxSeq ? parseInt(result.maxSeq, 10) : 0;
+      tableName = 'sample_tracking';
+      columnName = 'sampleNumber';
     } else if (prefix === 'RPK') {
-      const result = await queryRunner.manager
-        .createQueryBuilder(RepackingRecords, 'rpk')
-        .select(
-          'MAX(CAST(SUBSTRING(rpk.repackingNumber, -3) AS UNSIGNED))',
-          'maxSeq',
-        )
-        .where('rpk.repackingNumber LIKE :pattern', { pattern })
-        .andWhere('rpk.deletedAt IS NULL')
-        .getRawOne();
-
-      maxSequence = result?.maxSeq ? parseInt(result.maxSeq, 10) : 0;
+      tableName = 'repacking_records';
+      columnName = 'repackingNumber';
     }
 
+    // Get max sequence using raw SQL with FOR UPDATE lock
+    const result = await queryRunner.query(
+      `
+      SELECT COALESCE(MAX(CAST(SUBSTRING(${columnName}, -3) AS UNSIGNED)), 0) as maxSeq
+      FROM ${tableName}
+      WHERE ${columnName} LIKE ?
+        AND deletedAt IS NULL
+      FOR UPDATE
+      `,
+      [pattern],
+    );
+
+    maxSequence = result?.[0]?.maxSeq ? parseInt(result[0].maxSeq, 10) : 0;
+
+    // Add millisecond timestamp suffix if sequence already exists in uncommitted data
+    // This handles the case where multiple transactions create records before commit
     const sequence = String(maxSequence + 1).padStart(3, '0');
-    return `${prefix}-${dateStr}-${sequence}`;
+    const baseNumber = `${prefix}-${dateStr}-${sequence}`;
+
+    // Double-check uniqueness - if exists, add millisecond suffix
+    const existingCheck = await queryRunner.query(
+      `
+      SELECT COUNT(*) as cnt
+      FROM ${tableName}
+      WHERE ${columnName} = ?
+      `,
+      [baseNumber],
+    );
+
+    if (existingCheck?.[0]?.cnt > 0) {
+      // Add timestamp suffix for uniqueness
+      const ms = Date.now() % 10000; // Last 4 digits of timestamp
+      return `${prefix}-${dateStr}-${String(maxSequence + ms + 1).padStart(4, '0')}`;
+    }
+
+    return baseNumber;
   }
 
   /**
-   * Format date to YYYY-MM-DD
+   * Format date to YYYY-MM-DD in local timezone
+   * Note: Using local timezone to match how dates are stored in the database
    */
   private formatDate(date: Date): string {
-    return date.toISOString().split('T')[0];
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 
   /**
@@ -2029,8 +2199,6 @@ export class InventoryTransactionService extends BaseResponse {
           `Before: ${stockBefore} | Adjustment: ${adjustmentQuantity > 0 ? '+' : ''}${adjustmentQuantity} | ` +
           `After: ${actualStockAfter} | Reason: ${reason}`,
       );
-
-
 
       return this._success('Stock adjustment completed successfully', {
         transactionNumber,
