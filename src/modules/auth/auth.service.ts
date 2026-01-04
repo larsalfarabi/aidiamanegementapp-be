@@ -10,7 +10,7 @@ import BaseResponse from '../../common/response/base.response';
 import { Users } from '../users/entities/users.entity';
 import { Repository } from 'typeorm';
 import { InjectRepository } from '@nestjs/typeorm';
-import { JwtService } from '@nestjs/jwt';
+import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { jwtPayload } from './auth.interface';
 import { ResponseSuccess } from '../../common/interface/response.interface';
 import { LoginDto, RefreshTokenDto } from './dto/auth.dto';
@@ -30,10 +30,10 @@ export class AuthService extends BaseResponse {
 
   generateJWT(
     payload: jwtPayload,
-    expiresIn: string | number | undefined,
+    expiresIn: JwtSignOptions['expiresIn'],
     secret: string,
   ) {
-    return this.jwtService.sign(payload, {
+    return this.jwtService.sign(payload as Record<string, unknown>, {
       secret: secret,
       expiresIn: expiresIn,
     });
@@ -84,12 +84,12 @@ export class AuthService extends BaseResponse {
     const [access_token, refresh_token] = await Promise.all([
       this.generateJWT(
         jwtPayload,
-        process.env.JWT_EXPIRES_IN,
+        process.env.JWT_EXPIRES_IN as JwtSignOptions['expiresIn'],
         jwtConfig.access_token_secret,
       ),
       this.generateJWT(
         { id: user.id, email: user.email },
-        process.env.JWT_REFRESH_EXPIRES_IN,
+        process.env.JWT_REFRESH_EXPIRES_IN as JwtSignOptions['expiresIn'],
         jwtConfig.refresh_token_secret,
       ),
     ]);
@@ -182,12 +182,12 @@ export class AuthService extends BaseResponse {
     const [access_token, new_refresh_token] = await Promise.all([
       this.generateJWT(
         jwtPayload,
-        process.env.JWT_EXPIRES_IN,
+        process.env.JWT_EXPIRES_IN as JwtSignOptions['expiresIn'],
         jwtConfig.access_token_secret,
       ),
       this.generateJWT(
         { id: user.id, email: user.email },
-        process.env.JWT_REFRESH_EXPIRES_IN,
+        process.env.JWT_REFRESH_EXPIRES_IN as JwtSignOptions['expiresIn'],
         jwtConfig.refresh_token_secret,
       ),
     ]);
