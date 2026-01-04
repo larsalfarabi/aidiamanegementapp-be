@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import * as dotenv from 'dotenv';
 import * as compression from 'compression';
+import helmet from 'helmet';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { useContainer } from 'class-validator';
 import * as os from 'os';
@@ -43,7 +44,21 @@ async function bootstrap() {
       },
     }),
   );
-  app.enableCors();
+
+  // Security headers
+  app.use(helmet());
+
+  // CORS - restrict to allowed origins
+  const allowedOrigins = [
+    process.env.FRONTEND_URL || 'http://localhost:3000',
+    'https://aidiamakmur.cloud',
+    'https://be.aidiamakmur.cloud',
+  ];
+  app.enableCors({
+    origin: allowedOrigins,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    credentials: true,
+  });
   const port = process.env.APP_PORT!;
 
   app.useGlobalPipes(

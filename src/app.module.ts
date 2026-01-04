@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './modules/auth/auth.module';
@@ -28,6 +30,12 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     }),
     TypeOrmModule.forRoot(typeOrmConfig),
     ScheduleModule.forRoot(), // Enable scheduled tasks (cron jobs)
+    ThrottlerModule.forRoot([
+      {
+        ttl: 60000, // 1 minute window
+        limit: 100, // Max 100 requests per minute per IP
+      },
+    ]),
     CacheModule.registerAsync({
       isGlobal: true,
       imports: [ConfigModule],
@@ -79,6 +87,12 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     MailModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+  ],
 })
 export class AppModule {}
