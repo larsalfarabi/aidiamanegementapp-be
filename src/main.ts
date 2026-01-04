@@ -75,6 +75,9 @@ async function bootstrap() {
 
   useContainer(app.select(AppModule), { fallbackOnErrors: true });
 
+  // Enable graceful shutdown for proper cleanup
+  app.enableShutdownHooks();
+
   const networkIP = getNetworkIP();
 
   await app.listen(port, '0.0.0.0');
