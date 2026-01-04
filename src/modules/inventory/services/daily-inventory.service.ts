@@ -26,6 +26,10 @@ import {
   ResponsePagination,
   ResponseSuccess,
 } from '../../../common/interface/response.interface';
+import {
+  getJakartaDate,
+  getJakartaDateString,
+} from '../../../common/utils/date.util';
 
 /**
  * DailyInventoryService
@@ -166,7 +170,7 @@ export class DailyInventoryService extends BaseResponse {
    * Returns current day's inventory
    */
   async findByProductCode(productCodeId: number): Promise<ResponseSuccess> {
-    const today = new Date(this.formatDate(new Date()));
+    const today = new Date(getJakartaDateString());
 
     const inventory = await this.dailyInventoryRepo.findOne({
       where: {
@@ -366,7 +370,7 @@ export class DailyInventoryService extends BaseResponse {
     minimumStock: number,
     userId: number,
   ): Promise<ResponseSuccess> {
-    const businessDate = new Date().toISOString().split('T')[0];
+    const businessDate = getJakartaDateString();
 
     // Get all product codes, optionally filtered by mainCategory
     const queryBuilder = this.productCodesRepo
@@ -457,7 +461,7 @@ export class DailyInventoryService extends BaseResponse {
    * Returns products where stokAkhir <= minimumStock
    */
   async getLowStockProducts(businessDate?: string): Promise<ResponseSuccess> {
-    const targetDate = businessDate || this.formatDate(new Date());
+    const targetDate = businessDate || getJakartaDateString();
 
     const items = await this.dailyInventoryRepo
       .createQueryBuilder('di')
@@ -480,7 +484,7 @@ export class DailyInventoryService extends BaseResponse {
    * GET /inventory/daily/summary - Get stock summary for a date
    */
   async getStockSummary(businessDate?: string): Promise<ResponseSuccess> {
-    const targetDate = businessDate || this.formatDate(new Date());
+    const targetDate = businessDate || getJakartaDateString();
 
     const result = await this.dailyInventoryRepo
       .createQueryBuilder('di')
@@ -588,7 +592,7 @@ export class DailyInventoryService extends BaseResponse {
    * Utility: Format date to YYYY-MM-DD
    */
   private formatDate(date: Date): string {
-    return date.toISOString().split('T')[0];
+    return getJakartaDateString(date);
   }
 
   /**
@@ -599,7 +603,7 @@ export class DailyInventoryService extends BaseResponse {
     productCodeId: number,
     userId: number,
   ): Promise<DailyInventory> {
-    const today = new Date(this.formatDate(new Date()));
+    const today = new Date(getJakartaDateString());
 
     let inventory = await this.dailyInventoryRepo.findOne({
       where: {
@@ -653,8 +657,8 @@ export class DailyInventoryService extends BaseResponse {
     }
 
     // Get today's date for validation type determination
-    const today = new Date();
-    const todayStr = this.formatDate(today);
+    const today = getJakartaDate();
+    const todayStr = getJakartaDateString();
     const invoiceDateObj = new Date(invoiceDate);
 
     // Determine validation type
