@@ -1,4 +1,5 @@
 export interface jwtPayload {
+  [key: string]: unknown;
   id: number;
   firstname?: string;
   lastname?: string;
