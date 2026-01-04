@@ -24,32 +24,31 @@ jobs:
         run: bun run build
 
       - name: Setup SSH Key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add VPS to known_hosts
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Deploy to VPS
         run: |
           # Sync dist folder
           rsync -avz --delete \
-            -e "ssh -i ~/.ssh/id_ed25519" \
             ./dist/ \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/root/aidiamanegementapp-be/dist/
 
           # Sync package.json
           rsync -avz \
-            -e "ssh -i ~/.ssh/id_ed25519" \
             ./package.json \
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/root/aidiamanegementapp-be/
 
       - name: Restart PM2
         run: |
-          ssh -i ~/.ssh/id_ed25519 ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
-            # Dipaksa load Path Bun agar bunx jalan
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
             export PATH=\$PATH:/root/.bun/bin
-
             cd /root/aidiamanegementapp-be && \
             bunx pm2 restart all --update-env || echo 'PM2 reload failed'
             bunx pm2 save
