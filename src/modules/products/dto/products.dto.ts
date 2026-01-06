@@ -60,6 +60,10 @@ export class UpdateProductDto extends PartialType(ProductDto) {}
 export class QueryProductDto extends PaginationDto {
   @IsOptional()
   @IsString()
+  mainCategory?: string; // Filter by main category (Barang Jadi, Barang Baku, dll)
+
+  @IsOptional()
+  @IsString()
   subCategory?: string; // Filter by sub-category (Buffet, Premium, Freshly)
 }
 

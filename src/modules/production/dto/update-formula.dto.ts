@@ -30,10 +30,6 @@ export class UpdateFormulaDto extends PartialType(CreateFormulaDto) {
   productCodeId?: number;
 
   @IsOptional()
-  @IsString()
-  instructions?: string;
-
-  @IsOptional()
   @IsBoolean()
   isActive?: boolean;
 

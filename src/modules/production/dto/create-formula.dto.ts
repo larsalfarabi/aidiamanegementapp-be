@@ -65,10 +65,6 @@ export class CreateFormulaDto {
   productCodeId?: number; // OPTIONAL: Specific product size (for backward compatibility)
 
   @IsOptional()
-  @IsString()
-  instructions?: string;
-
-  @IsOptional()
   @IsBoolean()
   isActive?: boolean; // Default: true
 
