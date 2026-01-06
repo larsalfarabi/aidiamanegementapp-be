@@ -50,7 +50,7 @@ async function bootstrap() {
 
   // CORS - restrict to allowed origins
   const allowedOrigins = [
-    process.env.FRONTEND_URL || 'http://localhost:3000',
+    'http://localhost:3000',
     'https://aidiamakmur.cloud',
     'https://be.aidiamakmur.cloud',
   ];

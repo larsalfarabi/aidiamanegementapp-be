@@ -158,7 +158,7 @@ export class ProductionFormulaService extends BaseResponse {
         version,
         productId: dto.productId, // PRIMARY: Product concept
         productCodeId: dto.productCodeId || null, // OPTIONAL: Specific product size
-        instructions: dto.instructions || null,
+
         isActive: dto.isActive !== undefined ? dto.isActive : true,
         effectiveFrom: new Date(dto.effectiveFrom),
         effectiveTo: dto.effectiveTo ? new Date(dto.effectiveTo) : null,
@@ -421,8 +421,7 @@ export class ProductionFormulaService extends BaseResponse {
 
       // Update formula fields
       if (dto.formulaName) formula.formulaName = dto.formulaName;
-      if (dto.instructions !== undefined)
-        formula.instructions = dto.instructions;
+
       if (dto.isActive !== undefined) formula.isActive = dto.isActive;
       if (dto.effectiveFrom)
         formula.effectiveFrom = new Date(dto.effectiveFrom);
