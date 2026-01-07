@@ -69,7 +69,6 @@ export class UsersService extends BaseResponse {
 
     if (cachedData) {
       this.logger.log(`🚀 Data retrieved from Redis cache: ${cacheKey}`);
-      console.log('🚀 Data retrieved from Redis cache:', cacheKey);
       return {
         ...cachedData,
         message: cachedData.message + ' (from cache)',
@@ -77,7 +76,6 @@ export class UsersService extends BaseResponse {
     }
 
     this.logger.log(`📊 Cache miss for ${cacheKey}, fetching from database...`);
-    console.log('📊 Fetching data from database...');
 
     const [result, count] = await this.userRepository.findAndCount({
       where: whereCondition,
@@ -111,7 +109,6 @@ export class UsersService extends BaseResponse {
       try {
         await this.redisService.set(cacheKey, paginationResult, 300);
         this.logger.log(`💾 Data cached in Redis with key: ${cacheKey}`);
-        console.log('💾 Data cached in Redis with key:', cacheKey);
       } catch (error) {
         this.logger.error(`❌ Failed to cache data: ${error.message}`);
       }

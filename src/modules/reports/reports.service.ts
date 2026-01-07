@@ -346,11 +346,9 @@ export class ReportsService {
 
     // Date range filter
     if (from) {
-      console.log('Date Filter - From:', from, 'Type:', typeof from);
       queryBuilder.andWhere('order.invoiceDate >= :from', { from });
     }
     if (to) {
-      console.log('Date Filter - To:', to, 'Type:', typeof to);
       queryBuilder.andWhere('order.invoiceDate <= :to', { to });
     }
 
@@ -374,9 +372,6 @@ export class ReportsService {
 
     // Execute query
     const allOrders = await queryBuilder.getMany();
-
-    console.log('\n=== CUSTOMER SALES QUERY RESULTS ===');
-    console.log('Total Orders Found:', allOrders.length);
 
     // Step 2: Group orders by customer and aggregate
     const customerMap = new Map<number, CustomerSalesDataDto>();
@@ -455,9 +450,6 @@ export class ReportsService {
     const allCustomers = Array.from(customerMap.values()).sort(
       (a, b) => b.totalNetSales - a.totalNetSales,
     );
-
-    console.log('Unique Customers:', allCustomers.length);
-    console.log('=== END RESULTS ===\n');
 
     // Step 3: Apply pagination
     const total = allCustomers.length;
