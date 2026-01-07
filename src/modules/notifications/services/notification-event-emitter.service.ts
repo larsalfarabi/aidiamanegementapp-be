@@ -15,19 +15,12 @@ import {
 export enum NotificationEventType {
   // === SALES MODULE (14 events) ===
 
-
   // Order Management (8 events)
   ORDER_CREATED = 'ORDER_CREATED', // HIGH
 
   ORDER_CANCELLED = 'ORDER_CANCELLED', // HIGH
 
-
-
-
-
-
   // === WAREHOUSE MODULE (19 events) ===
-
 
   // Inventory Transactions (10 events)
   STOCK_OUT = 'STOCK_OUT', // CRITICAL
@@ -37,11 +30,7 @@ export enum NotificationEventType {
   ADJUSTMENT = 'ADJUSTMENT', // HIGH
   STOCK_MISMATCH = 'STOCK_MISMATCH', // CRITICAL
 
-
-
   // === PRODUCTION MODULE (16 events) ===
-
-
 
   // Production Batch (11 events)
 
@@ -51,10 +40,7 @@ export enum NotificationEventType {
   BATCH_CANCELLED = 'BATCH_CANCELLED', // HIGH
   MATERIAL_SHORTAGE = 'MATERIAL_SHORTAGE', // CRITICAL
 
-
-
   // === USER & PERMISSION MODULE (9 events) ===
-
 
   // Permission Management (2 events)
 
@@ -108,11 +94,6 @@ export class NotificationEventEmitter {
       actionLabel: 'Lihat Order',
       metadata: data,
     });
-
-    // Real-time delivery via WebSocket will be handled by service
-    console.log(
-      `✅ ORDER_CREATED notification sent for order ${data.orderNumber}`,
-    );
   }
 
   /**
@@ -137,10 +118,6 @@ export class NotificationEventEmitter {
       actionLabel: 'Lihat Detail',
       metadata: data,
     });
-
-    console.log(
-      `✅ ORDER_CANCELLED notification sent for order ${data.orderNumber}`,
-    );
   }
 
   /**
@@ -165,10 +142,6 @@ export class NotificationEventEmitter {
       actionLabel: 'Cek Stok',
       metadata: data,
     });
-
-    console.log(
-      `🔴 CRITICAL: STOCK_OUT notification sent for ${data.productCode}`,
-    );
   }
 
   /**
@@ -195,45 +168,27 @@ export class NotificationEventEmitter {
       actionLabel: 'Cek Stok',
       metadata: data,
     });
-
-    console.log(`⚠️ STOCK_LOW notification sent for ${data.productCode}`);
   }
-
-
 
   /**
    * Emit QC_PENDING notification (HIGH)
    */
 
-
   /**
    * Emit QC_FAILED notification (CRITICAL)
    */
-
-
-
 
   // ============================================
   // === SALES MODULE - ADDITIONAL EVENTS ===
   // ============================================
 
-
-
-
-
-
-
   // ============================================
   // === WAREHOUSE MODULE - PRODUCT EVENTS ===
   // ============================================
 
-
-
   // ============================================
   // === WAREHOUSE MODULE - INVENTORY TRANSACTIONS ===
   // ============================================
-
-
 
   /**
    * Emit WASTE notification (HIGH)
@@ -260,8 +215,6 @@ export class NotificationEventEmitter {
       actionLabel: 'Lihat Laporan',
       metadata: data,
     });
-
-    console.log(`⚠️ WASTE notification sent for ${data.productCode}`);
   }
 
   /**
@@ -288,8 +241,6 @@ export class NotificationEventEmitter {
       actionLabel: 'Verifikasi',
       metadata: data,
     });
-
-    console.log(`⚠️ ADJUSTMENT notification sent for ${data.productCode}`);
   }
 
   /**
@@ -316,34 +267,23 @@ export class NotificationEventEmitter {
       actionLabel: 'Stock Opname Segera',
       metadata: data,
     });
-
-    console.log(
-      `🔴 CRITICAL: STOCK_MISMATCH notification sent for ${data.productCode}`,
-    );
   }
 
   // ============================================
   // === WAREHOUSE MODULE - REPACKING ===
   // ============================================
 
-
-
   // ============================================
   // === PRODUCTION MODULE - FORMULA EVENTS ===
   // ============================================
-
-
 
   /**
    * Emit MATERIAL_RATIO_CHANGED notification (CRITICAL)
    */
 
-
   // ============================================
   // === PRODUCTION MODULE - BATCH EVENTS (ADDITIONAL) ===
   // ============================================
-
-
 
   /**
    * Emit BATCH_CANCELLED notification (HIGH)
@@ -370,10 +310,6 @@ export class NotificationEventEmitter {
       actionLabel: 'Lihat Detail',
       metadata: data,
     });
-
-    console.log(
-      `✅ BATCH_CREATED notification sent for batch ${data.batchNumber}`,
-    );
   }
 
   /**
@@ -399,10 +335,6 @@ export class NotificationEventEmitter {
       actionLabel: 'Lihat Detail',
       metadata: data,
     });
-
-    console.log(
-      `✅ BATCH_COMPLETED notification sent for batch ${data.batchNumber}`,
-    );
   }
 
   /**
@@ -426,10 +358,6 @@ export class NotificationEventEmitter {
       actionLabel: 'Lihat Detail',
       metadata: data,
     });
-
-    console.log(
-      `⚠️ BATCH_CANCELLED notification sent for batch ${data.batchNumber}`,
-    );
   }
 
   /**
@@ -465,24 +393,15 @@ export class NotificationEventEmitter {
       actionLabel: 'Restock Material',
       metadata: data,
     });
-
-    console.log(
-      `🔴 CRITICAL: MATERIAL_SHORTAGE notification sent for batch ${data.batchNumber}`,
-    );
   }
-
-
 
   /**
    * Emit WASTE_ABOVE_THRESHOLD notification (CRITICAL)
    */
 
-
   // ============================================
   // === USER & PERMISSION MODULE ===
   // ============================================
-
-
 
   /**
    * Emit LOGIN_FAILED_MULTIPLE notification (HIGH)
@@ -505,15 +424,11 @@ export class NotificationEventEmitter {
       actionLabel: 'Investigate',
       metadata: data,
     });
-
-    console.log(`⚠️ LOGIN_FAILED_MULTIPLE notification sent for ${data.email}`);
   }
 
   // ============================================
   // === SYSTEM MODULE ===
   // ============================================
-
-
 
   /**
    * Emit SYSTEM_ERROR notification (CRITICAL)
@@ -536,13 +451,7 @@ export class NotificationEventEmitter {
       actionLabel: 'Contact Support',
       metadata: data,
     });
-
-    console.log(
-      `🔴 CRITICAL: SYSTEM_ERROR notification sent for ${data.affectedModule}`,
-    );
   }
-
-
 
   /**
    * Emit REDIS_CONNECTION_LOST notification (CRITICAL)
@@ -561,8 +470,6 @@ export class NotificationEventEmitter {
       actionLabel: 'Restart Redis',
       metadata: {},
     });
-
-    console.log(`🔴 CRITICAL: REDIS_CONNECTION_LOST notification sent`);
   }
 
   /**
@@ -582,7 +489,5 @@ export class NotificationEventEmitter {
       actionLabel: 'Emergency Protocol',
       metadata: {},
     });
-
-    console.log(`🔴 CRITICAL: DATABASE_CONNECTION_LOST notification sent`);
   }
 }

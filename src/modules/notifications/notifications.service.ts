@@ -524,7 +524,7 @@ export class NotificationsService extends BaseResponse {
         .execute();
     }
 
-    console.log(
+    this.logger.log(
       `Cleaned up ${expiredNotifications.length} expired notifications`,
     );
   }

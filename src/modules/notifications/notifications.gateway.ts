@@ -87,8 +87,6 @@ export class NotificationsGateway
       }
       this.connectedUsers.get(userId)!.add(client.id);
 
-      console.log(`✅ User ${userId} connected (socket: ${client.id})`);
-
       // Send initial unread count
       const unreadCountResponse =
         await this.notificationsService.getUnreadCount(userId);
@@ -113,7 +111,6 @@ export class NotificationsGateway
           this.connectedUsers.delete(userId);
         }
       }
-      console.log(`❌ User ${userId} disconnected (socket: ${client.id})`);
     }
   }
 
