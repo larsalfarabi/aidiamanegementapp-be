@@ -277,8 +277,8 @@ export class ProductionFormulaService extends BaseResponse {
         )
         .leftJoinAndSelect('materialProductCode.product', 'materialProduct')
         .leftJoinAndSelect(
-          'materialProduct.category',
-          'materialProductCategory',
+          'materialProductCode.category',
+          'materialProductCodeCategory',
         )
         .orderBy('formula.createdAt', 'DESC');
 
@@ -313,13 +313,38 @@ export class ProductionFormulaService extends BaseResponse {
         .take(pageSize)
         .getManyAndCount();
 
-      const response = this._pagination(
-        'Formulas retrieved successfully',
-        formulas,
-        total,
-        page!,
-        pageSize!,
-      );
+      // Get statistics for ALL formulas (not affected by pagination)
+      const statsQuery = this.formulaRepository
+        .createQueryBuilder('formula')
+        .select('formula.isActive', 'isActive')
+        .addSelect('COUNT(*)', 'count')
+        .groupBy('formula.isActive');
+
+      const statsResult = await statsQuery.getRawMany();
+
+      const statistics = {
+        active: 0,
+        inactive: 0,
+      };
+
+      statsResult.forEach((row) => {
+        if (row.isActive === 1 || row.isActive === true) {
+          statistics.active = parseInt(row.count, 10);
+        } else {
+          statistics.inactive = parseInt(row.count, 10);
+        }
+      });
+
+      const response = {
+        ...this._pagination(
+          'Formulas retrieved successfully',
+          formulas,
+          total,
+          page!,
+          pageSize!,
+        ),
+        statistics,
+      };
 
       // Cache for 5 minutes
       await this.redisService.set(cacheKey, response, 300);

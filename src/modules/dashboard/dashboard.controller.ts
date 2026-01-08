@@ -17,6 +17,7 @@ import {
   SalesByCustomerTypeDto,
   ProductionSummaryDto,
   LowStockSummaryDto,
+  ActiveCustomersByTypeDto,
 } from './dto/dashboard.dto';
 
 @ApiTags('Dashboard')
@@ -166,6 +167,24 @@ export class DashboardController {
     return {
       status: 'Success',
       message: 'Low stock items retrieved successfully',
+      data,
+    };
+  }
+
+  @Get('active-customers-by-type')
+  @ApiOperation({
+    summary: 'Get customers who ordered this month grouped by type',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Returns count of customers who ordered this month by type',
+    type: ActiveCustomersByTypeDto,
+  })
+  async getActiveCustomersByType(): Promise<ResponseSuccess> {
+    const data = await this.dashboardService.getActiveCustomersByType();
+    return {
+      status: 'Success',
+      message: 'Active customers by type retrieved successfully',
       data,
     };
   }

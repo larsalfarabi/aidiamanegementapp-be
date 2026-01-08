@@ -18,6 +18,7 @@ import {
   SalesByCustomerTypeDto,
   ProductionSummaryDto,
   LowStockSummaryDto,
+  ActiveCustomersByTypeDto,
 } from './dto/dashboard.dto';
 import * as dayjs from 'dayjs';
 import * as relativeTime from 'dayjs/plugin/relativeTime';
@@ -457,5 +458,72 @@ export class DashboardService {
         mainCategory: item.productCode?.category?.name || 'Unknown',
       })),
     };
+  }
+
+  /**
+   * Get count of distinct customers who ordered this month, grouped by type
+   * Returns: { hotel, cafeResto, catering, reseller, total }
+   */
+  async getActiveCustomersByType(): Promise<ActiveCustomersByTypeDto> {
+    const startOfMonth = dayjs().startOf('month').format('YYYY-MM-DD');
+    const endOfMonth = dayjs().endOf('month').format('YYYY-MM-DD');
+
+    try {
+      // Query distinct customers who ordered this month, grouped by type
+      const customersByType = await this.ordersRepository
+        .createQueryBuilder('order')
+        .select('customer.customerType', 'type')
+        .addSelect('COUNT(DISTINCT order.customerId)', 'customerCount')
+        .innerJoin('order.customer', 'customer')
+        .where('DATE(order.orderDate) >= :startOfMonth', { startOfMonth })
+        .andWhere('DATE(order.orderDate) <= :endOfMonth', { endOfMonth })
+        .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
+          isDeleted: false,
+        })
+        .andWhere('customer.customerType IS NOT NULL')
+        .groupBy('customer.customerType')
+        .getRawMany();
+
+      // Initialize counts
+      const result: ActiveCustomersByTypeDto = {
+        hotel: 0,
+        cafeResto: 0,
+        catering: 0,
+        reseller: 0,
+        total: 0,
+      };
+
+      // Map results to response
+      customersByType.forEach((row) => {
+        const count = Number(row.customerCount || 0);
+        result.total += count;
+
+        switch (row.type) {
+          case 'Hotel':
+            result.hotel = count;
+            break;
+          case 'Cafe & Resto':
+            result.cafeResto = count;
+            break;
+          case 'Catering':
+            result.catering = count;
+            break;
+          case 'Reseller':
+            result.reseller = count;
+            break;
+        }
+      });
+
+      return result;
+    } catch (error) {
+      console.error('Error in getActiveCustomersByType:', error);
+      return {
+        hotel: 0,
+        cafeResto: 0,
+        catering: 0,
+        reseller: 0,
+        total: 0,
+      };
+    }
   }
 }
