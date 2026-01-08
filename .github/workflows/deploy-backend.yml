@@ -31,25 +31,25 @@ jobs:
       - name: Add VPS to known_hosts
         run: |
           mkdir -p ~/.ssh
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keyscan -p 22000 -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Deploy to VPS
         run: |
           # Sync dist folder
-          rsync -avz --delete \
+          rsync -avz --delete -e "ssh -p 22000" \
             ./dist/ \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/root/aidiamanegementapp-be/dist/
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/var/www/aidiamanegementapp-be/dist/
 
           # Sync package.json
-          rsync -avz \
+          rsync -avz -e "ssh -p 22000" \
             ./package.json \
-            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/root/aidiamanegementapp-be/
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/var/www/aidiamanegementapp-be/
 
       - name: Restart PM2
         run: |
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
-            export PATH=\$PATH:/root/.bun/bin
-            cd /root/aidiamanegementapp-be && \
+          ssh -p 22000 ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
+            export PATH=\$PATH:/home/sys_ops_core/.bun/bin
+            cd /var/www/aidiamanegementapp-be && \
             bunx pm2 restart all --update-env || echo 'PM2 reload failed'
             bunx pm2 save
           "

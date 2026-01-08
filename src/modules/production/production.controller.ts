@@ -27,6 +27,7 @@ import {
   CompleteBatchDto,
   CheckMaterialStockDto,
 } from './dto';
+import { Pagination } from 'src/common/decorator/pagination.decorator';
 
 @Controller('production')
 @UseGuards(JwtGuard, PermissionGuard)
@@ -55,7 +56,7 @@ export class ProductionController {
    */
   @RequirePermissions(`${Resource.FORMULA}:${Action.VIEW}`)
   @Get('formulas')
-  async getFormulas(@Query() filterDto: FilterFormulaDto) {
+  async getFormulas(@Pagination() filterDto: FilterFormulaDto) {
     return this.formulaService.getFormulas(filterDto);
   }
 
@@ -181,7 +182,7 @@ export class ProductionController {
    */
   @RequirePermissions(`${Resource.BATCH}:${Action.VIEW}`)
   @Get('batches')
-  async getBatches(@Query() filterDto: FilterBatchDto) {
+  async getBatches(@Pagination() filterDto: FilterBatchDto) {
     return this.batchService.getBatches(filterDto);
   }
 

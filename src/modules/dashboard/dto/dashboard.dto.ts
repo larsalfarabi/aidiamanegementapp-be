@@ -164,3 +164,30 @@ export class LowStockSummaryDto {
   @ApiProperty({ description: 'Top critical low stock items' })
   items: LowStockItemDto[];
 }
+
+export class ActiveCustomersByTypeDto {
+  @ApiProperty({
+    description: 'Number of Hotel customers who ordered this month',
+  })
+  hotel: number;
+
+  @ApiProperty({
+    description: 'Number of Cafe & Resto customers who ordered this month',
+  })
+  cafeResto: number;
+
+  @ApiProperty({
+    description: 'Number of Catering customers who ordered this month',
+  })
+  catering: number;
+
+  @ApiProperty({
+    description: 'Number of Reseller customers who ordered this month',
+  })
+  reseller: number;
+
+  @ApiProperty({
+    description: 'Total distinct customers who ordered this month',
+  })
+  total: number;
+}

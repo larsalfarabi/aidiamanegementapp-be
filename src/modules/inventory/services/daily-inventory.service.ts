@@ -70,7 +70,7 @@ export class DailyInventoryService extends BaseResponse {
    * - isActive: boolean
    * - page, pageSize: pagination
    */
-  async findAll(query: FilterDailyInventoryDto): Promise<ResponsePagination> {
+  async findAll(query: FilterDailyInventoryDto) {
     const {
       businessDate,
       productCodeId,
@@ -135,13 +135,57 @@ export class DailyInventoryService extends BaseResponse {
       filteredItems = items.filter((item) => item.stockStatus === stockStatus);
     }
 
-    return this._pagination(
-      'Daily inventory retrieved successfully',
-      filteredItems,
-      total,
-      page,
-      pageSize,
-    );
+    // Get statistics for ALL items (not affected by pagination or stockStatus filter)
+    // Build a separate query for statistics to count stock levels from entire dataset
+    const statsQueryBuilder = this.dailyInventoryRepo
+      .createQueryBuilder('di')
+      .leftJoin('di.productCode', 'pc')
+      .leftJoin('pc.category', 'mainCat')
+      .where('di.businessDate = :businessDate', { businessDate: businessDate })
+      .andWhere('di.deletedAt IS NULL')
+      .andWhere('di.isActive = :isActive', { isActive: true });
+
+    // Apply same mainCategory filter for stats
+    if (mainCategory) {
+      statsQueryBuilder.andWhere('mainCat.name = :mainCategory', {
+        mainCategory,
+      });
+    }
+
+    // Count stock levels using raw SQL
+    const statsResult = await statsQueryBuilder
+      .select('COUNT(*)', 'totalProducts')
+      .addSelect(
+        'SUM(CASE WHEN di.stokAkhir <= 0 THEN 1 ELSE 0 END)',
+        'outOfStock',
+      )
+      .addSelect(
+        'SUM(CASE WHEN di.stokAkhir > 0 AND di.minimumStock IS NOT NULL AND di.stokAkhir <= di.minimumStock THEN 1 ELSE 0 END)',
+        'lowStock',
+      )
+      .addSelect(
+        'SUM(CASE WHEN di.stokAkhir > 0 AND (di.minimumStock IS NULL OR di.stokAkhir > di.minimumStock) THEN 1 ELSE 0 END)',
+        'normalStock',
+      )
+      .getRawOne();
+
+    const statistics = {
+      totalProducts: parseInt(statsResult?.totalProducts || '0', 10),
+      normalStock: parseInt(statsResult?.normalStock || '0', 10),
+      lowStock: parseInt(statsResult?.lowStock || '0', 10),
+      outOfStock: parseInt(statsResult?.outOfStock || '0', 10),
+    };
+
+    return {
+      ...this._pagination(
+        'Daily inventory retrieved successfully',
+        filteredItems,
+        total,
+        page,
+        pageSize,
+      ),
+      statistics,
+    };
   }
 
   /**

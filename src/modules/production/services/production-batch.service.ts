@@ -908,13 +908,65 @@ export class ProductionBatchService extends BaseResponse {
         .take(pageSize)
         .getManyAndCount();
 
-      return this._pagination(
-        'Batches retrieved successfully',
-        batches,
-        total,
-        page,
-        pageSize,
-      );
+      // Get statistics for ALL batches (not affected by pagination)
+      const statsQuery = this.batchRepository
+        .createQueryBuilder('batch')
+        .select('batch.status', 'status')
+        .addSelect('COUNT(*)', 'count')
+        .groupBy('batch.status');
+
+      const statsResult = await statsQuery.getRawMany();
+
+      const statistics = {
+        total: 0,
+        planned: 0,
+        inProgress: 0,
+        completed: 0,
+        cancelled: 0,
+        draft: 0,
+        qcPending: 0,
+        rejected: 0,
+      };
+
+      statsResult.forEach((row) => {
+        const count = parseInt(row.count, 10);
+        statistics.total += count;
+
+        switch (row.status) {
+          case 'PLANNED':
+            statistics.planned = count;
+            break;
+          case 'IN_PROGRESS':
+            statistics.inProgress = count;
+            break;
+          case 'COMPLETED':
+            statistics.completed = count;
+            break;
+          case 'CANCELLED':
+            statistics.cancelled = count;
+            break;
+          case 'DRAFT':
+            statistics.draft = count;
+            break;
+          case 'QC_PENDING':
+            statistics.qcPending = count;
+            break;
+          case 'REJECTED':
+            statistics.rejected = count;
+            break;
+        }
+      });
+
+      return {
+        ...this._pagination(
+          'Batches retrieved successfully',
+          batches,
+          total,
+          page,
+          pageSize,
+        ),
+        statistics,
+      };
     } catch (error) {
       this.logger.error('Failed to get batches', error.stack);
       throw error;

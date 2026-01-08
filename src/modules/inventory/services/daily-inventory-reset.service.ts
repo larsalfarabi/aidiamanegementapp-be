@@ -325,6 +325,10 @@ export class DailyInventoryResetService {
 
   /**
    * Step 2: Carry forward stokAkhir to new day's stokAwal and reset daily columns
+   * Robustness Update:
+   * 1. Check Previous Day (Normal)
+   * 2. If empty, Check Latest Available Date (Gap Handling)
+   * 3. If empty, Initialize from Product Master (Fresh Start)
    */
   private async carryForwardAndReset(
     queryRunner: any,
@@ -332,11 +336,107 @@ export class DailyInventoryResetService {
     newBusinessDate: string,
   ): Promise<void> {
     this.logger.log(
-      `🔄 Carrying forward from ${previousBusinessDate} to ${newBusinessDate}...`,
+      `🔄 Processing carry forward for ${newBusinessDate} (Target)...`,
     );
 
-    // Lock yesterday's inventory records
-    const yesterdayInventory = await queryRunner.query(
+    let sourceDate = previousBusinessDate;
+
+    // 1. Try to fetch source data (Yesterday)
+    let sourceInventory = await this.fetchInventoryByDate(
+      queryRunner,
+      sourceDate,
+    );
+
+    // 2. Fallback: If no data found for Yesterday, look for LATEST available data
+    if (sourceInventory.length === 0) {
+      this.logger.warn(
+        `⚠️ No inventory records found for ${previousBusinessDate}. Searching for historical data...`,
+      );
+
+      const latestDateResult = await queryRunner.query(
+        `
+        SELECT MAX(businessDate) as latestDate 
+        FROM daily_inventory 
+        WHERE deletedAt IS NULL 
+          AND isActive = 1 
+          AND businessDate < ?
+        `,
+        [newBusinessDate],
+      );
+
+      const latestDate = latestDateResult[0]?.latestDate;
+
+      if (latestDate) {
+        // Fallback A: Found historical data (Bridging the gap)
+        // Convert Date object to string (YYYY-MM-DD) if needed
+        const latestDateObj = new Date(latestDate);
+        // Ensure we get the correct YYYY-MM-DD string
+        const year = latestDateObj.getFullYear();
+        const month = String(latestDateObj.getMonth() + 1).padStart(2, '0');
+        const day = String(latestDateObj.getDate()).padStart(2, '0');
+        sourceDate = `${year}-${month}-${day}`;
+
+        this.logger.log(
+          `🔄 Found latest historical data from ${sourceDate}. Using this as base for carry forward.`,
+        );
+        sourceInventory = await this.fetchInventoryByDate(
+          queryRunner,
+          sourceDate,
+        );
+      } else {
+        // Fallback B: No historical data found (Fresh Initialization)
+        this.logger.warn(
+          `⚠️ No historical data found in daily_inventory. Initializing from Product Master (Fresh Start)...`,
+        );
+        await this.initializeFromProductMaster(queryRunner, newBusinessDate);
+        return; // Initialization done, exit function
+      }
+    }
+
+    if (sourceInventory.length === 0) {
+      this.logger.error(
+        `❌ Critical: Failed to retrieve source data even after fallback search.`,
+      );
+      return;
+    }
+
+    this.logger.log(
+      `📦 Carrying forward ${sourceInventory.length} products from ${sourceDate} to ${newBusinessDate}`,
+    );
+
+    // Insert new records for today with carried forward stokAwal
+    const values = sourceInventory.map((item: any) => [
+      newBusinessDate, // businessDate
+      item.productCodeId, // productCodeId
+      item.stokAkhir, // stokAwal (taken from source stokAkhir)
+      0, // barangMasuk (reset)
+      0, // dipesan (reset)
+      0, // barangOutRepack (reset)
+      0, // barangOutSample (reset)
+      0, // barangOutProduksi (reset)
+      // stokAkhir is GENERATED COLUMN
+      item.minimumStock,
+      item.maximumStock,
+      true, // isActive
+      item.notes,
+      item.createdBy,
+      item.updatedBy,
+    ]);
+
+    // Batch insert
+    await this.batchInsertInventory(queryRunner, values);
+
+    this.logger.log(`✅ Carry forward complete for ${newBusinessDate}`);
+  }
+
+  /**
+   * Helper: Fetch inventory records for a specific date
+   */
+  private async fetchInventoryByDate(
+    queryRunner: any,
+    date: string,
+  ): Promise<any[]> {
+    return queryRunner.query(
       `
       SELECT 
         productCodeId,
@@ -352,40 +452,66 @@ export class DailyInventoryResetService {
         AND deletedAt IS NULL
       FOR UPDATE
       `,
-      [previousBusinessDate],
+      [date],
     );
+  }
 
-    if (!yesterdayInventory || yesterdayInventory.length === 0) {
-      this.logger.warn(
-        `⚠️ No inventory records found for ${previousBusinessDate}. Skipping carry forward.`,
-      );
+  /**
+   * Helper: Initialize inventory from Product Master
+   * Used when no historical inventory data exists.
+   */
+  private async initializeFromProductMaster(
+    queryRunner: any,
+    businessDate: string,
+  ): Promise<void> {
+    this.logger.log(`🌱 Fetching active products from Master Data...`);
+
+    const activeProducts = await queryRunner.query(`
+      SELECT id as productCodeId 
+      FROM product_codes 
+      WHERE isActive = 1 
+        AND isDeleted = 0
+    `);
+
+    if (activeProducts.length === 0) {
+      this.logger.warn(`⚠️ No active products found in Master Data.`);
       return;
     }
 
     this.logger.log(
-      `📦 Found ${yesterdayInventory.length} products to carry forward`,
+      `📦 Found ${activeProducts.length} active products. Initializing with Stock = 0.`,
     );
 
-    // Insert new records for today with carried forward stokAwal
-    const values = yesterdayInventory.map((item: any) => [
-      newBusinessDate, // businessDate
-      item.productCodeId, // productCodeId
-      item.stokAkhir, // stokAwal (carried forward from yesterday's stokAkhir)
-      0, // barangMasuk (reset)
-      0, // dipesan (reset)
-      0, // barangOutRepack (reset)
-      0, // barangOutSample (reset)
-      0, // barangOutProduksi (reset)
-      // stokAkhir is GENERATED COLUMN, will be auto-calculated
-      item.minimumStock,
-      item.maximumStock,
+    const values = activeProducts.map((item: any) => [
+      businessDate,
+      item.productCodeId,
+      0, // stokAwal = 0
+      0, // barangMasuk
+      0, // dipesan
+      0, // barangOutRepack
+      0, // barangOutSample
+      0, // barangOutProduksi
+      0, // minimumStock (default)
+      0, // maximumStock (default)
       true, // isActive
-      item.notes,
-      item.createdBy,
-      item.updatedBy,
+      'Initial Reset', // notes
+      'SYSTEM', // createdBy
+      'SYSTEM', // updatedBy
     ]);
 
-    // Batch insert 500 records at a time
+    await this.batchInsertInventory(queryRunner, values);
+    this.logger.log(
+      `✅ Initialized ${values.length} records for ${businessDate}`,
+    );
+  }
+
+  /**
+   * Helper: Batch Insert Inventory Records
+   */
+  private async batchInsertInventory(
+    queryRunner: any,
+    values: any[][],
+  ): Promise<void> {
     const batchSize = 500;
     for (let i = 0; i < values.length; i += batchSize) {
       const batch = values.slice(i, i + batchSize);
@@ -416,8 +542,6 @@ export class DailyInventoryResetService {
         flatValues,
       );
     }
-
-    this.logger.log(`✅ Created new inventory records for ${newBusinessDate}`);
   }
 
   /**
