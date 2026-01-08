@@ -48,7 +48,7 @@ jobs:
       - name: Restart PM2
         run: |
           ssh -p 22000 ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
-            export PATH=\$PATH:/home/sys_ops_core/.bun/bin
+            export PATH=/home/sys_ops_core/.nvm/versions/node/v24.12.0/bin:/home/sys_ops_core/.bun/bin:\$PATH
             cd /var/www/aidiamanegementapp-be && \
             bunx pm2 restart all --update-env || echo 'PM2 reload failed'
             bunx pm2 save
