@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsEnum,
   Min,
+  IsDate,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -39,4 +40,9 @@ export class RecordProductionDto {
   @IsOptional()
   @IsString()
   performedBy?: string; // Nama staff produksi yang melakukan
+
+  @IsOptional()
+  @IsDate()
+  @Type(() => Date)
+  productionDate?: Date; // ✅ NEW: Date of production for backdating
 }

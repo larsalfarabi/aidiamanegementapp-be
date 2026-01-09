@@ -30,6 +30,7 @@ import { ProductionFormulaService } from './production-formula.service';
 import { InventoryLegacyService } from '../../inventory/services/inventory-legacy.service';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { NotificationEventEmitter } from '../../notifications/services/notification-event-emitter.service';
+import { getJakartaDateString } from '../../../common/utils/date.util';
 
 @Injectable()
 export class ProductionBatchService extends BaseResponse {
@@ -63,12 +64,10 @@ export class ProductionBatchService extends BaseResponse {
    *
    * Uses MAX(sequence) to find the highest existing number for the date,
    * preventing duplicates even after batch deletion.
+   * ✅ Uses getJakartaDateString for consistent Jakarta timezone
    */
   private async generateBatchNumber(productionDate: Date): Promise<string> {
-    const dateStr = productionDate
-      .toISOString()
-      .split('T')[0]
-      .replace(/-/g, '');
+    const dateStr = getJakartaDateString(productionDate).replace(/-/g, '');
 
     // Get today's batches to find max sequence number
     const startOfDay = new Date(productionDate);
@@ -121,8 +120,7 @@ export class ProductionBatchService extends BaseResponse {
   async checkMaterialStock(dto: CheckMaterialStockDto) {
     try {
       const productionDate = new Date(dto.productionDate);
-      const today = new Date();
-      const businessDate = today.toISOString().split('T')[0];
+      const businessDate = productionDate.toISOString().split('T')[0];
 
       // 1. Collect all material IDs
       const materialIds = dto.materials.map((m) => m.materialProductCodeId);
@@ -342,6 +340,7 @@ export class ProductionBatchService extends BaseResponse {
       const stockAvailability =
         await this.inventoryService.checkMaterialAvailability(
           materialStockCheck,
+          dto.productionDate, // ✅ Backdate support
         );
 
       if (!stockAvailability.available) {
@@ -551,6 +550,7 @@ export class ProductionBatchService extends BaseResponse {
         userId,
         batch.performedBy || undefined,
         `Material untuk batch ${batch.batchNumber}`,
+        batch.productionDate, // ✅ Backdate support
       );
 
       this.logger.log(
@@ -1506,6 +1506,7 @@ export class ProductionBatchService extends BaseResponse {
       userId,
       batch.performedBy || undefined,
       `Material consumed for batch ${batch.batchNumber}`,
+      batch.productionDate,
     );
   }
 
@@ -1529,6 +1530,7 @@ export class ProductionBatchService extends BaseResponse {
           userId,
           batch.performedBy || undefined,
           `Production from batch ${batch.batchNumber}${output.notes ? ` - ${output.notes}` : ''}`,
+          batch.productionDate,
         );
       transactions.push(transaction);
     }

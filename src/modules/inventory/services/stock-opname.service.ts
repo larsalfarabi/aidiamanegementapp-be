@@ -53,11 +53,6 @@ export class StockOpnameService extends BaseResponse {
   ): Promise<ResponseSuccess> {
     const { sessionDate, entries } = dto;
 
-    console.log(
-      `\n🔄 [BATCH SAVE START] sessionDate: ${sessionDate}, entries: ${entries.length}`,
-    );
-    console.log(`📦 [BATCH SAVE] Entries:`, JSON.stringify(entries, null, 2));
-
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
@@ -70,19 +65,11 @@ export class StockOpnameService extends BaseResponse {
       for (const entry of entries) {
         const { productCodeId, stokAkhir, soFisik, keterangan } = entry;
 
-        console.log(
-          `\n📝 [PROCESSING] productCodeId: ${productCodeId}, soFisik: ${soFisik}, keterangan: ${keterangan}`,
-        );
-
         // Calculate selisih if soFisik provided
         const selisih =
           soFisik !== null && soFisik !== undefined
             ? soFisik - stokAkhir
             : null;
-
-        console.log(
-          `🧮 [CALC] stokAkhir: ${stokAkhir}, soFisik: ${soFisik}, selisih: ${selisih}`,
-        );
 
         // Check if record exists - FIXED: Use query builder with DATE() function for exact date matching
         let soRecord = await queryRunner.manager
@@ -91,13 +78,7 @@ export class StockOpnameService extends BaseResponse {
           .andWhere('so.productCodeId = :productCodeId', { productCodeId })
           .getOne();
 
-        console.log(
-          `🔍 [CHECK] Existing record found: ${soRecord ? `YES (id=${soRecord.id})` : 'NO'}`,
-        );
-
         if (soRecord) {
-          // Update existing
-          console.log(`🔄 [UPDATE] Updating existing record id=${soRecord.id}`);
           soRecord.stokAkhir = stokAkhir;
           soRecord.soFisik = soFisik !== undefined ? soFisik : null;
           soRecord.selisih = selisih;
@@ -106,12 +87,7 @@ export class StockOpnameService extends BaseResponse {
 
           await queryRunner.manager.save(soRecord);
           updateCount++;
-          console.log(`✅ [UPDATE] Success for productCodeId=${productCodeId}`);
         } else {
-          // Create new
-          console.log(
-            `➕ [INSERT] Creating new record for productCodeId=${productCodeId}`,
-          );
           soRecord = queryRunner.manager.create(StockOpnameRecords, {
             sessionDate: new Date(sessionDate),
             productCodeId,
@@ -125,21 +101,12 @@ export class StockOpnameService extends BaseResponse {
 
           await queryRunner.manager.save(soRecord);
           insertCount++;
-          console.log(
-            `✅ [INSERT] Success for productCodeId=${productCodeId}, new id=${soRecord.id}`,
-          );
         }
 
         savedRecords.push(soRecord);
       }
 
       await queryRunner.commitTransaction();
-
-      console.log(`\n✅ [BATCH SAVE SUCCESS]`);
-      console.log(`   - Total processed: ${savedRecords.length}`);
-      console.log(`   - Inserted: ${insertCount}`);
-      console.log(`   - Updated: ${updateCount}`);
-      console.log(`   - SessionDate: ${sessionDate}`);
 
       return this._success(
         `Batch stock opname saved successfully (${savedRecords.length} products: ${insertCount} new, ${updateCount} updated)`,

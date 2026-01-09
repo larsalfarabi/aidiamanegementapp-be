@@ -195,6 +195,18 @@ export class InventoryController {
     );
   }
 
+  /**
+   * GET /inventory/product/:productId/registered-codes
+   * Get product codes registered in daily inventory for a specific product
+   * Used for filtering dropdowns in production forms
+   */
+  @Get('product/:productId/registered-codes')
+  async getRegisteredProductCodes(
+    @Param('productId', ParseIntPipe) productId: number,
+  ) {
+    return this.dailyInventoryService.getRegisteredProductCodes(productId);
+  }
+
   // ==================== INVENTORY TRANSACTION OPERATIONS ====================
 
   /**

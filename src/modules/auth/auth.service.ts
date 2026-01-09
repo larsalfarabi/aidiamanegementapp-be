@@ -40,8 +40,6 @@ export class AuthService extends BaseResponse {
   }
 
   async login(payload: LoginDto): Promise<ResponseSuccess> {
-    console.log('🔐 [AUTH] Login attempt for email:', payload.email);
-
     const user = await this.userRepository.findOne({
       where: {
         email: payload.email,
@@ -67,8 +65,6 @@ export class AuthService extends BaseResponse {
       console.error('❌ [AUTH] Invalid password for:', payload.email);
       throw new BadRequestException('Email atau password salah');
     }
-
-    console.log('✅ [AUTH] Password validated, generating tokens...');
 
     const jwtPayload: jwtPayload = {
       id: user.id,
@@ -101,13 +97,6 @@ export class AuthService extends BaseResponse {
 
     const { password, ...userWithoutPassword } = user;
 
-    console.log(
-      '✅ [AUTH] Login successful for:',
-      user.email,
-      '| Role:',
-      user.roles?.name,
-    );
-
     return this._success('Login berhasil', {
       access_token,
       refresh_token,
@@ -116,11 +105,6 @@ export class AuthService extends BaseResponse {
   }
 
   async refreshToken(payload: RefreshTokenDto): Promise<ResponseSuccess> {
-    console.log(
-      '🔄 [AUTH] Refresh token request for refresh token:',
-      payload.refresh_token,
-    );
-
     // Check if refresh_token is provided and not empty
     if (!payload.refresh_token || payload.refresh_token.trim() === '') {
       console.error('❌ [AUTH] No refresh token provided');
@@ -134,7 +118,6 @@ export class AuthService extends BaseResponse {
       await this.jwtService.verify(payload.refresh_token, {
         secret: jwtConfig.refresh_token_secret,
       });
-      console.log('✅ [AUTH] Refresh token verified successfully');
     } catch (error) {
       console.error(
         '❌ [AUTH] Refresh token verification failed:',
@@ -164,8 +147,6 @@ export class AuthService extends BaseResponse {
         'Sesi Anda tidak valid atau telah berakhir. Silakan login kembali.',
       );
     }
-
-    console.log('✅ [AUTH] User found, generating new tokens...');
 
     const jwtPayload: jwtPayload = {
       id: user.id,
@@ -198,11 +179,6 @@ export class AuthService extends BaseResponse {
       lastLoginAt: new Date(),
     });
 
-    console.log(
-      '✅ [AUTH] Tokens refreshed successfully for user:',
-      user.email,
-    );
-
     return this._success('Sesi berhasil diperbarui', {
       access_token,
       refresh_token: new_refresh_token,
@@ -217,8 +193,6 @@ export class AuthService extends BaseResponse {
   }
 
   async logout(id: number): Promise<ResponseSuccess> {
-    console.log('🚪 [AUTH] Logout request for user ID:', id);
-
     const user = await this.userRepository.findOne({
       where: { id },
     });
@@ -231,8 +205,6 @@ export class AuthService extends BaseResponse {
     await this.userRepository.update(id, {
       refresh_token: undefined,
     });
-
-    console.log('✅ [AUTH] Logout successful for:', user.email);
 
     return this._success('Logout berhasil');
   }
