@@ -60,6 +60,24 @@ export class InventoryController {
     private readonly stockOpnameService: StockOpnameService,
   ) {}
 
+  /**
+   * POST /inventory/admin/sync-stock - Force Sync Stock History
+   * Used to repair consistency issues from backdated transactions
+   */
+  @RequirePermissions(`${Resource.INVENTORY}:${Action.UPDATE}`)
+  @Post('admin/sync-stock')
+  async syncStockCorrection(
+    @Body() dto: { startDate: string; productCodeId?: number },
+  ) {
+    if (!dto.startDate) {
+      throw new Error('startDate is required');
+    }
+    return this.dailyInventoryService.syncBackdatedStock(
+      dto.startDate,
+      dto.productCodeId,
+    );
+  }
+
   // ==================== DAILY INVENTORY CRUD ====================
 
   /**
