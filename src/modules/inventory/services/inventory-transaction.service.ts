@@ -43,6 +43,7 @@ import {
 } from '../dto/record-transaction.dto';
 import { FilterTransactionsDto } from '../dto/filter-transactions.dto';
 import { AdjustStockDto } from '../dto/adjust-stock.dto';
+import { DailyInventoryService } from './daily-inventory.service';
 
 /**
  * InventoryTransactionService
@@ -83,6 +84,7 @@ export class InventoryTransactionService extends BaseResponse {
     @InjectRepository(ProductCodes)
     private readonly productCodesRepo: Repository<ProductCodes>,
 
+    private readonly dailyInventoryService: DailyInventoryService,
     private readonly dataSource: DataSource,
   ) {
     super();
@@ -114,39 +116,36 @@ export class InventoryTransactionService extends BaseResponse {
         );
       }
 
-      const today = this.formatDate(new Date());
-      const todayDate = new Date(today);
+      const businessDate = dto.productionDate
+        ? this.formatDate(new Date(dto.productionDate))
+        : this.formatDate(new Date());
 
-      // Get or create today's daily inventory
-      let dailyInventory = await this.getOrCreateDailyInventory(
-        queryRunner,
+      // Update stock with propagation
+      await this.dailyInventoryService.updateStockWithPropagation(
         dto.productCodeId,
-        todayDate,
-        userId,
+        dto.quantity,
+        {
+          businessDate,
+          userId,
+          column: 'barangMasuk',
+        },
+        queryRunner.manager,
       );
 
-      // Calculate balance before transaction
-      // Use nullish coalescing to handle null values from database
-      const stokAwal = Number(dailyInventory.stokAwal ?? 0);
-      const barangMasuk = Number(dailyInventory.barangMasuk ?? 0);
-      const dipesan = Number(dailyInventory.dipesan ?? 0);
-      const barangOutRepack = Number(dailyInventory.barangOutRepack ?? 0);
-      const barangOutSample = Number(dailyInventory.barangOutSample ?? 0);
-
-      const balanceBefore =
-        stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample;
-
-      this.logger.log(
-        `[PRODUCTION] Product ${dto.productCodeId} - Balance Before: ${balanceBefore} (stokAwal: ${stokAwal}, barangMasuk: ${barangMasuk}, dipesan: ${dipesan})`,
+      // Reload daily inventory to get updated stokAkhir (GENERATED COLUMN) for balance log
+      // We must reload here because updateStockWithPropagation might not return generated columns
+      const updatedInventory = await queryRunner.manager.findOne(
+        DailyInventory,
+        {
+          where: {
+            productCodeId: dto.productCodeId,
+            businessDate: businessDate as any,
+          },
+          relations: ['productCode', 'productCode.product'],
+        },
       );
 
-      // Update daily inventory: increment barangMasuk
-      dailyInventory.barangMasuk = barangMasuk + dto.quantity;
-      dailyInventory.updatedBy = userId;
-      await queryRunner.manager.save(DailyInventory, dailyInventory);
-
-      // Calculate balance after
-      const balanceAfter = balanceBefore + dto.quantity;
+      const balanceAfter = Number(updatedInventory?.stokAkhir || 0);
 
       this.logger.log(
         `[PRODUCTION] Product ${dto.productCodeId} - Balance After: ${balanceAfter} (added: ${dto.quantity})`,
@@ -162,21 +161,15 @@ export class InventoryTransactionService extends BaseResponse {
       const transaction = new InventoryTransactions();
       transaction.transactionNumber = transactionNumber;
       transaction.transactionDate = new Date();
-      transaction.businessDate = todayDate;
+      transaction.businessDate = new Date(businessDate);
       transaction.transactionType = TransactionType.PRODUCTION_IN;
       transaction.productCodeId = dto.productCodeId;
       transaction.quantity = dto.quantity;
 
-      // ✅ Ensure balanceAfter is always a valid number
+      // Ensure balanceAfter is always a valid number
       transaction.balanceAfter = Number.isFinite(balanceAfter)
         ? balanceAfter
         : 0;
-
-      if (!Number.isFinite(balanceAfter)) {
-        this.logger.error(
-          `[PRODUCTION] Invalid balanceAfter (${balanceAfter}) for product ${dto.productCodeId}. Setting to 0.`,
-        );
-      }
 
       transaction.productionBatchNumber = dto.productionBatchNumber;
       transaction.status = TransactionStatus.COMPLETED;
@@ -193,19 +186,10 @@ export class InventoryTransactionService extends BaseResponse {
 
       const savedTransaction = await queryRunner.manager.save(transaction);
 
-      // Reload daily inventory to get updated stokAkhir (GENERATED COLUMN)
-      const updatedInventory = await queryRunner.manager.findOne(
-        DailyInventory,
-        {
-          where: { id: dailyInventory.id },
-          relations: ['productCode', 'productCode.product'],
-        },
-      );
-
       await queryRunner.commitTransaction();
 
       this.logger.log(
-        `Production recorded: Product ${dto.productCodeId}, Qty ${dto.quantity}, Batch ${dto.productionBatchNumber}`,
+        `Production recorded: Product ${dto.productCodeId}, Qty ${dto.quantity}, Batch ${dto.productionBatchNumber}, Date ${businessDate}`,
       );
 
       return this._success('Production recorded successfully', {
@@ -240,9 +224,10 @@ export class InventoryTransactionService extends BaseResponse {
 
     try {
       // 1. Validate product exists and is a material (not finished goods)
+      // ✅ FIX: Check 'category' on ProductCodes (Main Category), not Product (Sub Category)
       const productCode = await this.productCodesRepo.findOne({
         where: { id: dto.productCodeId },
-        relations: ['product', 'product.category'],
+        relations: ['product', 'category'], // Fetch 'category' direct from ProductCodes
       });
 
       if (!productCode) {
@@ -251,7 +236,8 @@ export class InventoryTransactionService extends BaseResponse {
         );
       }
 
-      const categoryName = productCode.product?.category?.name || '';
+      // Check Main Category
+      const categoryName = productCode.category?.name || '';
       const isMaterial =
         categoryName === 'Barang Baku' ||
         categoryName === 'Barang Pembantu' ||
@@ -259,7 +245,7 @@ export class InventoryTransactionService extends BaseResponse {
 
       if (!isMaterial) {
         throw new BadRequestException(
-          `Produk "${productCode.product?.name}" bukan material. Gunakan endpoint production untuk Barang Jadi.`,
+          `Produk "${productCode.product?.name}" dengan kategori "${categoryName}" bukan material. Gunakan endpoint production untuk Barang Jadi.`,
         );
       }
 
@@ -268,25 +254,29 @@ export class InventoryTransactionService extends BaseResponse {
         dto.purchaseDate || new Date().toISOString().split('T')[0];
       const businessDate = new Date(businessDateStr);
 
-      // 3. Get or create daily_inventory for this business date
-      const dailyInventory = await this.getOrCreateDailyInventory(
-        queryRunner,
+      // 3. Update stock with propagation
+      await this.dailyInventoryService.updateStockWithPropagation(
         dto.productCodeId,
-        businessDate,
-        userId,
+        dto.quantity,
+        {
+          businessDate: businessDateStr,
+          userId,
+          column: 'barangMasuk',
+        },
+        queryRunner.manager,
       );
 
-      // 4. Calculate current balance (before this purchase)
-      const currentBalance =
-        Number(dailyInventory.stokAwal || 0) +
-        Number(dailyInventory.barangMasuk || 0) -
-        Number(dailyInventory.dipesan || 0) -
-        Number(dailyInventory.barangOutRepack || 0) -
-        Number(dailyInventory.barangOutSample || 0) -
-        Number(dailyInventory.barangOutProduksi || 0);
+      // 4. Reload daily inventory to get updated stokAkhir
+      const dailyInventory = await queryRunner.manager.findOne(DailyInventory, {
+        where: {
+          productCodeId: dto.productCodeId,
+          businessDate: businessDateStr as any,
+        },
+      });
 
-      // 5. Calculate balance after this purchase
-      const balanceAfter = currentBalance + dto.quantity;
+      // 5. Calculate balances
+      // Note: dailyInventory.stokAkhir is used as balanceAfter
+      const balanceAfter = Number(dailyInventory?.stokAkhir || 0);
 
       // 6. Generate unique purchase transaction number (PUR-YYYYMMDD-XXX)
       const datePrefix = businessDateStr.replace(/-/g, '');
@@ -300,6 +290,7 @@ export class InventoryTransactionService extends BaseResponse {
             transactionNumber: 'DESC',
           },
           take: 1,
+          lock: { mode: 'pessimistic_write' }, // Lock to prevent duplicates
         },
       );
 
@@ -338,7 +329,7 @@ export class InventoryTransactionService extends BaseResponse {
       const transaction = queryRunner.manager.create(InventoryTransactions, {
         transactionNumber,
         transactionType: TransactionType.PURCHASE,
-        transactionDate: businessDate,
+        transactionDate: new Date(),
         businessDate: businessDate,
         productCodeId: dto.productCodeId,
         quantity: dto.quantity,
@@ -350,17 +341,11 @@ export class InventoryTransactionService extends BaseResponse {
 
       await queryRunner.manager.save(InventoryTransactions, transaction);
 
-      // 9. Update daily_inventory.barangMasuk
-      dailyInventory.barangMasuk =
-        Number(dailyInventory.barangMasuk || 0) + dto.quantity;
-
-      await queryRunner.manager.save(DailyInventory, dailyInventory);
-
-      // 10. Commit transaction
+      // 9. Commit transaction
       await queryRunner.commitTransaction();
 
       this.logger.log(
-        `✅ Purchase recorded: ${transactionNumber} | ${dto.quantity} unit | Balance: ${currentBalance} → ${balanceAfter}`,
+        `✅ Purchase recorded: ${transactionNumber} | ${dto.quantity} unit | Balance After: ${balanceAfter}`,
       );
 
       return this._success('Pembelian material berhasil dicatat', {
@@ -421,15 +406,10 @@ export class InventoryTransactionService extends BaseResponse {
           );
         }
 
-        // ✅ CRITICAL FIX: Use invoiceDate instead of today for inventory reservation
         const targetDate = dto.invoiceDate
           ? this.formatDate(new Date(dto.invoiceDate))
           : this.formatDate(new Date());
         const businessDate = new Date(targetDate);
-
-        console.log(
-          `[RECORD SALE - Attempt ${attempt}] Invoice Date: ${dto.invoiceDate || 'today'}, Target Business Date: ${targetDate}`,
-        );
 
         // Get or create daily inventory for the invoice/business date
         // Note: Pastikan getOrCreateDailyInventory support EntityManager atau ambil queryRunner dari manager
@@ -461,17 +441,19 @@ export class InventoryTransactionService extends BaseResponse {
           );
         }
 
-        // Update daily inventory: increment dipesan
-        const quantityToAdd = Number(dto.quantity) || 0;
-        dailyInventory.dipesan = dipesan + quantityToAdd;
-        dailyInventory.updatedBy = userId;
-
-        this.logger.log(
-          `[RECORD SALE - Attempt ${attempt}] Product ${dto.productCodeId}: dipesan ${dipesan} + ${quantityToAdd} = ${dailyInventory.dipesan}`,
+        // Update stock with propagation (dipesan)
+        // Note: updateStockWithPropagation takes delta. Quantity is positive here.
+        // It updates 'dipesan' column.
+        await this.dailyInventoryService.updateStockWithPropagation(
+          dto.productCodeId,
+          dto.quantity,
+          {
+            businessDate: targetDate,
+            userId,
+            column: 'dipesan',
+          },
+          manager, // Use the manager from retry loop loops
         );
-
-        // ✅ USE MANAGER
-        await manager.save(DailyInventory, dailyInventory);
 
         // ✅ FIX: Re-fetch entity to get the updated stokAkhir
         const refreshedInventory = await manager.findOne(DailyInventory, {
@@ -655,61 +637,34 @@ export class InventoryTransactionService extends BaseResponse {
         // Set currentStock to 0 since we don't have inventory data
         currentStock = 0;
       } else {
-        // Check if dipesan is sufficient
-        // Use nullish coalescing to handle null values
-        const originalDipesan = dailyInventory.dipesan ?? 0;
-        this.logger.log(
-          `[REVERSE SALE] Before update - productCodeId: ${productCodeId}, originalDipesan: ${originalDipesan}, quantity to reverse: ${quantity}`,
+        // Update stock with propagation (decrement dipesan)
+        // delta is NEGATIVE quantity to reverse
+        await this.dailyInventoryService.updateStockWithPropagation(
+          productCodeId,
+          -quantity,
+          {
+            businessDate: targetDateStr,
+            userId,
+            column: 'dipesan',
+          },
+          queryRunner.manager,
         );
 
-        if (originalDipesan < quantity) {
-          this.logger.warn(
-            `[REVERSE SALE] Cannot fully reverse. Current dipesan (${originalDipesan}) is less than quantity (${quantity}). Setting dipesan to 0.`,
-          );
-          // Set dipesan to 0 instead of going negative
-          dailyInventory.dipesan = 0;
-        } else {
-          // Update daily inventory: decrement dipesan
-          dailyInventory.dipesan = originalDipesan - quantity;
-        }
-
-        this.logger.log(
-          `[REVERSE SALE] After calculation - newDipesan: ${dailyInventory.dipesan}`,
-        );
-
-        dailyInventory.updatedBy = userId;
-        const savedInventory = await queryRunner.manager.save(
+        // Reload daily inventory
+        const updatedInventory = await queryRunner.manager.findOne(
           DailyInventory,
-          dailyInventory,
+          {
+            where: {
+              id: dailyInventory.id,
+            },
+          },
         );
 
-        this.logger.log(
-          `[REVERSE SALE] After save - savedDipesan: ${savedInventory.dipesan}, inventoryId: ${savedInventory.id}`,
-        );
-
-        // Calculate balance after
-        // Use parseFloat to handle string/decimal values from database, and ensure no NaN
-        const stokAwal = parseFloat(String(dailyInventory.stokAwal)) || 0;
-        const barangMasuk = parseFloat(String(dailyInventory.barangMasuk)) || 0;
-        const dipesan = parseFloat(String(dailyInventory.dipesan)) || 0;
-        const barangOutRepack =
-          parseFloat(String(dailyInventory.barangOutRepack)) || 0;
-        const barangOutSample =
-          parseFloat(String(dailyInventory.barangOutSample)) || 0;
-
-        currentStock =
-          stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample;
-
-        // Ensure currentStock is never NaN
-        if (isNaN(currentStock)) {
-          this.logger.warn(
-            `[REVERSE SALE] currentStock is NaN, setting to 0. Values: stokAwal=${stokAwal}, barangMasuk=${barangMasuk}, dipesan=${dipesan}`,
-          );
-          currentStock = 0;
-        }
+        // Use updated stokAkhir
+        currentStock = Number(updatedInventory?.stokAkhir || 0);
 
         this.logger.log(
-          `[REVERSE SALE] Calculated currentStock: ${currentStock}`,
+          `[REVERSE SALE] Previous Stock: ${dailyInventory.stokAkhir}, New Stock: ${currentStock}`,
         );
       }
 
@@ -910,78 +865,85 @@ export class InventoryTransactionService extends BaseResponse {
         );
       }
 
-      const today = this.formatDate(new Date());
-      const todayDate = new Date(today);
+      const businessDateStr = dto.repackingDate
+        ? this.formatDate(new Date(dto.repackingDate))
+        : this.formatDate(new Date());
+      const businessDate = new Date(businessDateStr);
 
-      // Get or create daily inventory for both products
-      const sourceInventory = await this.getOrCreateDailyInventory(
-        queryRunner,
-        dto.sourceProductCodeId,
-        todayDate,
-        userId,
+      // Check source stock availability first
+      const sourceInventoryCheck = await queryRunner.manager.findOne(
+        DailyInventory,
+        {
+          where: {
+            productCodeId: dto.sourceProductCodeId,
+            businessDate: businessDateStr as any,
+          },
+        },
       );
 
-      const targetInventory = await this.getOrCreateDailyInventory(
-        queryRunner,
-        dto.targetProductCodeId,
-        todayDate,
-        userId,
-      );
-
-      // Check source stock availability
-      // Explicit Number conversion to prevent NaN
-      const sourceStokAwal = Number(sourceInventory.stokAwal ?? 0);
-      const sourceBarangMasuk = Number(sourceInventory.barangMasuk ?? 0);
-      const sourceDipesan = Number(sourceInventory.dipesan ?? 0);
-      const sourceBarangOutRepack = Number(
-        sourceInventory.barangOutRepack ?? 0,
-      );
-      const sourceBarangOutSample = Number(
-        sourceInventory.barangOutSample ?? 0,
-      );
-
-      const sourceStock =
-        sourceStokAwal +
-        sourceBarangMasuk -
-        sourceDipesan -
-        sourceBarangOutRepack -
-        sourceBarangOutSample;
+      const sourceStock = Number(sourceInventoryCheck?.stokAkhir || 0);
 
       this.logger.log(
         `[REPACKING SOURCE] Product ${dto.sourceProductCodeId} - Current Stock: ${sourceStock}`,
       );
 
+      // Allow backdate to create negative stock if needed, but warn?
+      // Or strictly enforce? Usually backdate allows negative temporarily if data is catching up.
+      // But let's check current snapshot.
       if (sourceStock < dto.sourceQuantity) {
+        // We can throw, or maybe allow if backdating?
+        // Safe bet: Throw if insufficient.
         throw new BadRequestException(
           `Insufficient stock for source product ${dto.sourceProductCodeId}. Available: ${sourceStock}, Requested: ${dto.sourceQuantity}`,
         );
       }
 
       // Update source inventory: increment barangOutRepack
-      sourceInventory.barangOutRepack =
-        sourceBarangOutRepack + dto.sourceQuantity;
-      sourceInventory.updatedBy = userId;
-      await queryRunner.manager.save(DailyInventory, sourceInventory);
+      await this.dailyInventoryService.updateStockWithPropagation(
+        dto.sourceProductCodeId,
+        dto.sourceQuantity, // Use positive value, logic handles it as OUT if mapped to OUT column?
+        // Wait, updateStockWithPropagation takes delta and ADDS it.
+        // So I send POSITIVE quantity and map to 'barangOutRepack'.
+        // StokAkhir calculation subtracts barangOutRepack.
+        {
+          businessDate: businessDateStr,
+          userId,
+          column: 'barangOutRepack',
+        },
+        queryRunner.manager,
+      );
 
-      // Refresh source inventory to get updated stokAkhir (generated column)
+      // Refresh source inventory to get updated stokAkhir
       const refreshedSourceInventory = await queryRunner.manager.findOne(
         DailyInventory,
         {
-          where: { id: sourceInventory.id },
+          where: {
+            productCodeId: dto.sourceProductCodeId,
+            businessDate: businessDateStr as any,
+          },
         },
       );
 
       // Update target inventory: increment barangMasuk
-      const targetBarangMasuk = Number(targetInventory.barangMasuk ?? 0);
-      targetInventory.barangMasuk = targetBarangMasuk + dto.targetQuantity;
-      targetInventory.updatedBy = userId;
-      await queryRunner.manager.save(DailyInventory, targetInventory);
+      await this.dailyInventoryService.updateStockWithPropagation(
+        dto.targetProductCodeId,
+        dto.targetQuantity,
+        {
+          businessDate: businessDateStr,
+          userId,
+          column: 'barangMasuk',
+        },
+        queryRunner.manager,
+      );
 
-      // Refresh target inventory to get updated stokAkhir (generated column)
+      // Refresh target inventory to get updated stokAkhir
       const refreshedTargetInventory = await queryRunner.manager.findOne(
         DailyInventory,
         {
-          where: { id: targetInventory.id },
+          where: {
+            productCodeId: dto.targetProductCodeId,
+            businessDate: businessDateStr as any,
+          },
         },
       );
 
@@ -991,8 +953,7 @@ export class InventoryTransactionService extends BaseResponse {
         'RPK',
       );
 
-      // Calculate conversion ratio: how many source units = 1 target unit
-      // Example: 4 x 250ML → 1 x 1000ML = ratio 4.0
+      // Calculate conversion ratio
       const sourceQty = Number(dto.sourceQuantity);
       const targetQty = Number(dto.targetQuantity);
 
@@ -1008,7 +969,7 @@ export class InventoryTransactionService extends BaseResponse {
       const repackingRecord = new RepackingRecords();
       repackingRecord.repackingNumber = repackingNumber;
       repackingRecord.repackingDate = new Date();
-      repackingRecord.businessDate = todayDate;
+      repackingRecord.businessDate = businessDate;
       repackingRecord.sourceProductCodeId = dto.sourceProductCodeId;
       repackingRecord.targetProductCodeId = dto.targetProductCodeId;
       repackingRecord.sourceQuantity = sourceQty;
@@ -1028,7 +989,7 @@ export class InventoryTransactionService extends BaseResponse {
 
       const savedRepacking = await queryRunner.manager.save(repackingRecord);
 
-      // Calculate balances with explicit Number conversion and validation
+      // Calculate balances with explicit Number conversion
       const sourceBalanceAfter = Number(
         refreshedSourceInventory?.stokAkhir ?? 0,
       );
@@ -1048,17 +1009,10 @@ export class InventoryTransactionService extends BaseResponse {
       const sourceTransaction = new InventoryTransactions();
       sourceTransaction.transactionNumber = sourceTrxNumber;
       sourceTransaction.transactionDate = new Date();
-      sourceTransaction.businessDate = todayDate;
+      sourceTransaction.businessDate = businessDate;
       sourceTransaction.transactionType = TransactionType.REPACK_OUT;
       sourceTransaction.productCodeId = dto.sourceProductCodeId;
       sourceTransaction.quantity = dto.sourceQuantity;
-
-      // Validate balanceAfter before save
-      if (!Number.isFinite(sourceBalanceAfter)) {
-        this.logger.error(
-          `[REPACKING SOURCE] Invalid balanceAfter (${sourceBalanceAfter}). Setting to 0.`,
-        );
-      }
       sourceTransaction.balanceAfter = Number.isFinite(sourceBalanceAfter)
         ? sourceBalanceAfter
         : 0;
@@ -1074,10 +1028,10 @@ export class InventoryTransactionService extends BaseResponse {
       }
       sourceTransaction.createdBy = userId;
 
-      // Save source transaction first to increment sequence
+      // Save source transaction first
       await queryRunner.manager.save(InventoryTransactions, sourceTransaction);
 
-      // Create target transaction (IN) - generate new number after source is saved
+      // Create target transaction (IN)
       const targetTrxNumber = await this.generateTransactionNumber(
         queryRunner,
         'TRX',
@@ -1085,17 +1039,10 @@ export class InventoryTransactionService extends BaseResponse {
       const targetTransaction = new InventoryTransactions();
       targetTransaction.transactionNumber = targetTrxNumber;
       targetTransaction.transactionDate = new Date();
-      targetTransaction.businessDate = todayDate;
+      targetTransaction.businessDate = businessDate;
       targetTransaction.transactionType = TransactionType.REPACK_IN;
       targetTransaction.productCodeId = dto.targetProductCodeId;
       targetTransaction.quantity = dto.targetQuantity;
-
-      // Validate balanceAfter before save
-      if (!Number.isFinite(targetBalanceAfter)) {
-        this.logger.error(
-          `[REPACKING TARGET] Invalid balanceAfter (${targetBalanceAfter}). Setting to 0.`,
-        );
-      }
       targetTransaction.balanceAfter = Number.isFinite(targetBalanceAfter)
         ? targetBalanceAfter
         : 0;
@@ -1114,18 +1061,6 @@ export class InventoryTransactionService extends BaseResponse {
       // Save target transaction
       await queryRunner.manager.save(InventoryTransactions, targetTransaction);
 
-      // Reload both inventories
-      const [updatedSource, updatedTarget] = await Promise.all([
-        queryRunner.manager.findOne(DailyInventory, {
-          where: { id: sourceInventory.id },
-          relations: ['productCode', 'productCode.product'],
-        }),
-        queryRunner.manager.findOne(DailyInventory, {
-          where: { id: targetInventory.id },
-          relations: ['productCode', 'productCode.product'],
-        }),
-      ]);
-
       await queryRunner.commitTransaction();
 
       this.logger.log(
@@ -1134,8 +1069,8 @@ export class InventoryTransactionService extends BaseResponse {
 
       return this._success('Repacking recorded successfully', {
         repackingRecord: savedRepacking,
-        sourceInventory: updatedSource,
-        targetInventory: updatedTarget,
+        sourceInventory: refreshedSourceInventory,
+        targetInventory: refreshedTargetInventory,
         transactions: {
           source: sourceTransaction,
           target: targetTransaction,
@@ -1178,27 +1113,19 @@ export class InventoryTransactionService extends BaseResponse {
         );
       }
 
-      const today = this.formatDate(new Date());
-      const todayDate = new Date(today);
-
-      // Get or create today's inventory
-      const dailyInventory = await this.getOrCreateDailyInventory(
-        queryRunner,
-        dto.productCodeId,
-        todayDate,
-        userId,
-      );
+      const businessDateStr = dto.sampleDate
+        ? this.formatDate(new Date(dto.sampleDate))
+        : this.formatDate(new Date());
+      const businessDate = new Date(businessDateStr);
 
       // Check stock availability
-      // Explicit Number conversion to prevent NaN
-      const stokAwal = Number(dailyInventory.stokAwal ?? 0);
-      const barangMasuk = Number(dailyInventory.barangMasuk ?? 0);
-      const dipesan = Number(dailyInventory.dipesan ?? 0);
-      const barangOutRepack = Number(dailyInventory.barangOutRepack ?? 0);
-      const barangOutSample = Number(dailyInventory.barangOutSample ?? 0);
-
-      const currentStock =
-        stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample;
+      const inventoryCheck = await queryRunner.manager.findOne(DailyInventory, {
+        where: {
+          productCodeId: dto.productCodeId,
+          businessDate: businessDateStr as any,
+        },
+      });
+      const currentStock = Number(inventoryCheck?.stokAkhir || 0);
 
       this.logger.log(
         `[SAMPLE OUT] Product ${dto.productCodeId} - Current Stock: ${currentStock}`,
@@ -1211,24 +1138,30 @@ export class InventoryTransactionService extends BaseResponse {
       }
 
       // Update daily inventory: increment barangOutSample
-      dailyInventory.barangOutSample = barangOutSample + dto.quantity;
-      dailyInventory.updatedBy = userId;
-      await queryRunner.manager.save(DailyInventory, dailyInventory);
+      await this.dailyInventoryService.updateStockWithPropagation(
+        dto.productCodeId,
+        dto.quantity,
+        {
+          businessDate: businessDateStr,
+          userId,
+          column: 'barangOutSample',
+        },
+        queryRunner.manager,
+      );
 
       // Refresh inventory to get updated stokAkhir (generated column)
       const refreshedInventory = await queryRunner.manager.findOne(
         DailyInventory,
         {
-          where: { id: dailyInventory.id },
+          where: {
+            productCodeId: dto.productCodeId,
+            businessDate: businessDateStr as any,
+          },
         },
       );
 
       // Calculate balance with explicit Number conversion and validation
       const balanceAfter = Number(refreshedInventory?.stokAkhir ?? 0);
-
-      this.logger.log(
-        `[SAMPLE OUT] Product ${dto.productCodeId} - Balance After: ${balanceAfter}`,
-      );
 
       this.logger.log(
         `[SAMPLE OUT] Product ${dto.productCodeId} - Balance After: ${balanceAfter}`,
@@ -1244,7 +1177,7 @@ export class InventoryTransactionService extends BaseResponse {
       const sampleTracking = new SampleTracking();
       sampleTracking.sampleNumber = sampleNumber;
       sampleTracking.sampleDate = new Date();
-      sampleTracking.businessDate = todayDate;
+      sampleTracking.businessDate = businessDate;
       sampleTracking.productCodeId = dto.productCodeId;
       sampleTracking.quantity = dto.quantity;
       sampleTracking.recipientName = dto.customerName;
@@ -1271,17 +1204,11 @@ export class InventoryTransactionService extends BaseResponse {
       const transaction = new InventoryTransactions();
       transaction.transactionNumber = transactionNumber;
       transaction.transactionDate = new Date();
-      transaction.businessDate = todayDate;
+      transaction.businessDate = businessDate;
       transaction.transactionType = TransactionType.SAMPLE_OUT;
       transaction.productCodeId = dto.productCodeId;
       transaction.quantity = dto.quantity;
 
-      // Validate balanceAfter before save
-      if (!Number.isFinite(balanceAfter)) {
-        this.logger.error(
-          `[SAMPLE OUT] Invalid balanceAfter (${balanceAfter}). Setting to 0.`,
-        );
-      }
       transaction.balanceAfter = Number.isFinite(balanceAfter)
         ? balanceAfter
         : 0;
@@ -1296,15 +1223,6 @@ export class InventoryTransactionService extends BaseResponse {
       savedSample.outTransactionId = savedTransaction.id;
       await queryRunner.manager.save(SampleTracking, savedSample);
 
-      // Reload inventory
-      const updatedInventory = await queryRunner.manager.findOne(
-        DailyInventory,
-        {
-          where: { id: dailyInventory.id },
-          relations: ['productCode', 'productCode.product'],
-        },
-      );
-
       await queryRunner.commitTransaction();
 
       this.logger.log(
@@ -1313,7 +1231,7 @@ export class InventoryTransactionService extends BaseResponse {
 
       return this._success('Sample out recorded successfully', {
         sampleTracking: savedSample,
-        dailyInventory: updatedInventory,
+        dailyInventory: refreshedInventory,
         transaction: savedTransaction,
       });
     } catch (error) {
@@ -1358,8 +1276,10 @@ export class InventoryTransactionService extends BaseResponse {
         );
       }
 
-      const today = this.formatDate(new Date());
-      const todayDate = new Date(today);
+      const businessDateStr = dto.returnDate
+        ? this.formatDate(new Date(dto.returnDate))
+        : this.formatDate(new Date());
+      const businessDate = new Date(businessDateStr);
       const returnedQty = dto.returnedQuantity || 0;
 
       // Map status
@@ -1376,7 +1296,7 @@ export class InventoryTransactionService extends BaseResponse {
 
       // Update sample tracking
       sampleTracking.status = newStatus;
-      sampleTracking.returnDate = new Date();
+      sampleTracking.returnDate = new Date(); // Or dto.returnDate? Usually return log timestamp.
       sampleTracking.returnQuantity = returnedQty;
       sampleTracking.notes = dto.notes || sampleTracking.notes;
       sampleTracking.updatedBy = userId;
@@ -1386,43 +1306,31 @@ export class InventoryTransactionService extends BaseResponse {
       let dailyInventory = null;
       let transaction = null;
 
-      // If returned (not lost/damaged), increment barangMasuk
+      // If returned (not lost/damaged), increment barangMasuk using propagation
       if (dto.status === 'returned' && returnedQty > 0) {
-        dailyInventory = await this.getOrCreateDailyInventory(
-          queryRunner,
+        await this.dailyInventoryService.updateStockWithPropagation(
           sampleTracking.productCodeId,
-          todayDate,
-          userId,
+          returnedQty,
+          {
+            businessDate: businessDateStr,
+            userId,
+            column: 'barangMasuk',
+          },
+          queryRunner.manager,
         );
-
-        // Explicit Number conversion to prevent NaN
-        const stokAwal = Number(dailyInventory.stokAwal ?? 0);
-        const barangMasuk = Number(dailyInventory.barangMasuk ?? 0);
-        const dipesan = Number(dailyInventory.dipesan ?? 0);
-        const barangOutRepack = Number(dailyInventory.barangOutRepack ?? 0);
-        const barangOutSample = Number(dailyInventory.barangOutSample ?? 0);
-
-        const currentStock =
-          stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample;
-
-        this.logger.log(
-          `[SAMPLE RETURN] Product ${sampleTracking.productCodeId} - Current Stock Before Return: ${currentStock}`,
-        );
-
-        // Update inventory
-        dailyInventory.barangMasuk = barangMasuk + returnedQty;
-        dailyInventory.updatedBy = userId;
-        await queryRunner.manager.save(DailyInventory, dailyInventory);
 
         // Refresh inventory to get updated stokAkhir (generated column)
         const refreshedInventory = await queryRunner.manager.findOne(
           DailyInventory,
           {
-            where: { id: dailyInventory.id },
+            where: {
+              productCodeId: sampleTracking.productCodeId,
+              businessDate: businessDateStr as any,
+            },
           },
         );
 
-        // Calculate balance with explicit Number conversion and validation
+        // Calculate balance with explicit Number conversion
         const balanceAfter = Number(refreshedInventory?.stokAkhir ?? 0);
 
         this.logger.log(
@@ -1439,17 +1347,11 @@ export class InventoryTransactionService extends BaseResponse {
         transaction = new InventoryTransactions();
         transaction.transactionNumber = transactionNumber;
         transaction.transactionDate = new Date();
-        transaction.businessDate = todayDate;
+        transaction.businessDate = businessDate;
         transaction.transactionType = TransactionType.SAMPLE_RETURN;
         transaction.productCodeId = sampleTracking.productCodeId;
         transaction.quantity = returnedQty;
 
-        // Validate balanceAfter before save
-        if (!Number.isFinite(balanceAfter)) {
-          this.logger.error(
-            `[SAMPLE RETURN] Invalid balanceAfter (${balanceAfter}). Setting to 0.`,
-          );
-        }
         transaction.balanceAfter = Number.isFinite(balanceAfter)
           ? balanceAfter
           : 0;
@@ -1464,13 +1366,8 @@ export class InventoryTransactionService extends BaseResponse {
         sampleTracking.returnTransactionId = savedTransaction.id;
         await queryRunner.manager.save(SampleTracking, sampleTracking);
 
-        // Reload inventory
-        dailyInventory = await queryRunner.manager.findOne(DailyInventory, {
-          where: { id: dailyInventory.id },
-          relations: ['productCode', 'productCode.product'],
-        });
-
         transaction = savedTransaction;
+        dailyInventory = refreshedInventory;
       }
 
       await queryRunner.commitTransaction();
@@ -1672,12 +1569,25 @@ export class InventoryTransactionService extends BaseResponse {
 
     const queryBuilder = this.repackingRepo
       .createQueryBuilder('repacking')
-      .leftJoinAndSelect('repacking.sourceProductCode', 'sourceProduct')
-      .leftJoinAndSelect('sourceProduct.product', 'sourceProductInfo')
-      .leftJoinAndSelect('sourceProduct.size', 'sourceSize')
-      .leftJoinAndSelect('repacking.targetProductCode', 'targetProduct')
-      .leftJoinAndSelect('targetProduct.product', 'targetProductInfo')
-      .leftJoinAndSelect('targetProduct.size', 'targetSize')
+      .leftJoin('repacking.sourceProductCode', 'sourceProduct')
+      .leftJoin('sourceProduct.product', 'sourceProductInfo')
+      .leftJoin('sourceProduct.size', 'sourceSize')
+      .leftJoin('repacking.targetProductCode', 'targetProduct')
+      .leftJoin('targetProduct.product', 'targetProductInfo')
+      .leftJoin('targetProduct.size', 'targetSize')
+      .select([
+        'repacking',
+        'sourceProduct.id',
+        'sourceProduct.productCode',
+        'sourceProductInfo.name',
+        'sourceSize.sizeValue',
+        'sourceSize.unitOfMeasure',
+        'targetProduct.id',
+        'targetProduct.productCode',
+        'targetProductInfo.name',
+        'targetSize.sizeValue',
+        'targetSize.unitOfMeasure',
+      ])
       .orderBy('repacking.repackingDate', 'DESC');
 
     // Filters
@@ -2125,38 +2035,25 @@ export class InventoryTransactionService extends BaseResponse {
         );
       }
 
-      // ⚠️ IMPORTANT: stokAkhir is a GENERATED COLUMN and cannot be updated directly!
-      // Formula: stokAkhir = stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample - barangOutProduksi
-      //
-      // For ADJUSTMENT, we update stokAwal to reflect the correction:
-      // - Positive adjustment (+): Increase stokAwal
-      // - Negative adjustment (-): Decrease stokAwal
-      // This way the GENERATED COLUMN will automatically recalculate
-      const currentStokAwal = Number(dailyInventory.stokAwal);
-      const newStokAwal = Number((currentStokAwal + adjustmentQty).toFixed(2));
-
-      this.logger.log(
-        `[ADJUSTMENT] Before update - stokAwal: ${currentStokAwal}, adjustment: ${adjustmentQty}, newStokAwal: ${newStokAwal}`,
-      );
-
-      // CRITICAL FIX: Update using the entity ID directly (most reliable approach)
-      // We already have dailyInventory from earlier query, use its ID
-      const updateResult = await queryRunner.manager
-        .createQueryBuilder()
-        .update(DailyInventory)
-        .set({ stokAwal: newStokAwal })
-        .where('id = :id', { id: dailyInventory.id })
-        .execute();
-
-      this.logger.log(
-        `[ADJUSTMENT] Update result - affected rows: ${updateResult.affected} (updated ID: ${dailyInventory.id})`,
+      // Update stock with propagation (stokAwal)
+      // Adjustment directly affects stokAwal of the target day, and propagates to future days
+      await this.dailyInventoryService.updateStockWithPropagation(
+        productCodeId,
+        adjustmentQuantity,
+        {
+          businessDate: businessDate, // Already YYYY-MM-DD string from DTO
+          userId,
+          column: 'stokAwal',
+        },
+        queryRunner.manager,
       );
 
       // Reload entity by ID to get updated GENERATED COLUMN value
+      // We use the ID if we found it earlier, or re-query by date if it was potentially created by updateStockWithPropagation (though adjustStock requires existing usually, updateStockWithPropagation creates if missing)
       const updatedInventory = await queryRunner.manager.findOne(
         DailyInventory,
         {
-          where: { id: dailyInventory.id },
+          where: { productCodeId, businessDate: businessDate as any },
         },
       );
 
@@ -2165,7 +2062,7 @@ export class InventoryTransactionService extends BaseResponse {
         : stockAfter;
 
       this.logger.log(
-        `[ADJUSTMENT] After reload - stokAwal: ${updatedInventory?.stokAwal}, stokAkhir: ${actualStockAfter}`,
+        `[ADJUSTMENT] After update - stokAwal: ${updatedInventory?.stokAwal}, stokAkhir: ${actualStockAfter}`,
       );
 
       // Generate transaction number

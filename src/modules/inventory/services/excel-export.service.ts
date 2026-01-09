@@ -419,11 +419,6 @@ export class ExcelExportService {
         ? 'Barang Jadi'
         : mainCategory || 'Barang Baku';
 
-      console.log(`\n📊 [STOCK OPNAME FETCH]`);
-      console.log(`   - startDate: ${startDate}`);
-      console.log(`   - categoryFilter: ${categoryFilter}`);
-      console.log(`   - isFinishedGoods: ${isFinishedGoods}`);
-
       // Use relation-based JOIN (like transaction report) to avoid circular reference
       // This ensures we get the correct category filter and avoid entity loading
       const stockOpnameRecords = await this.stockOpnameRepo
@@ -438,9 +433,6 @@ export class ExcelExportService {
         .andWhere('cat.name = :categoryName', { categoryName: categoryFilter })
         .getRawMany();
 
-      console.log(`   - Found ${stockOpnameRecords.length} records`);
-      console.log(`   - Records:`, JSON.stringify(stockOpnameRecords, null, 2));
-
       stockOpnameRecords.forEach((record) => {
         stockOpnameMap.set(record.productCodeId, {
           soFisik: record.soFisik,
@@ -448,18 +440,7 @@ export class ExcelExportService {
           keterangan: record.keterangan,
         });
       });
-
-      console.log(`\n🗺️  [STOCK OPNAME MAP]`);
-      console.log(`   - Map size: ${stockOpnameMap.size}`);
-      console.log(`   - Map keys:`, Array.from(stockOpnameMap.keys()));
     }
-
-    console.log(`\n🔄 [MERGE PROCESS]`);
-    console.log(`   - Transaction report rows: ${rows.length}`);
-    console.log(
-      `   - Transaction report productCodeIds:`,
-      rows.map((r) => r.productCodeId),
-    );
 
     // Step 3: Merge Stock Opname data with transaction report
     const mergedRows = rows.map((row) => {
@@ -470,23 +451,6 @@ export class ExcelExportService {
         selisih: soData?.selisih || row.selisih,
         keterangan: soData?.keterangan || row.keterangan,
       };
-    });
-
-    console.log(`   - Merged rows: ${mergedRows.length}`);
-    console.log(
-      `   - Rows with SO FISIK data:`,
-      mergedRows.filter((r) => r.soFisik !== null && r.soFisik !== undefined)
-        .length,
-    );
-    console.log(`\n📋 [SAMPLE MERGED ROWS]`);
-    mergedRows.slice(0, 3).forEach((row, idx) => {
-      console.log(`   Row ${idx + 1}:`, {
-        productCodeId: row.productCodeId,
-        productCode: row.productCode,
-        soFisik: row.soFisik,
-        selisih: row.selisih,
-        keterangan: row.keterangan,
-      });
     });
 
     // Step 4: Use appropriate export method with merged data

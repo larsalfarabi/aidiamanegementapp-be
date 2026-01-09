@@ -57,6 +57,7 @@ export class OrdersService extends BaseResponse {
 
     const lastOrder = await this.ordersRepo
       .createQueryBuilder('order')
+      .setLock('pessimistic_write') // Prevent duplicates
       .where('order.orderNumber LIKE :pattern', { pattern: `ORD-${dateStr}-%` })
       .orderBy('order.orderNumber', 'DESC')
       .getOne();
@@ -83,6 +84,7 @@ export class OrdersService extends BaseResponse {
 
     const lastInvoice = await this.ordersRepo
       .createQueryBuilder('order')
+      .setLock('pessimistic_write') // Prevent duplicates
       .where('order.invoiceNumber IS NOT NULL')
       .andWhere('order.invoiceDate BETWEEN :start AND :end', {
         start: startOfMonth,
@@ -385,17 +387,18 @@ export class OrdersService extends BaseResponse {
         throw new BadRequestException('User ID is required for creating order');
       }
 
-      // ✅ Check if invoice date is today (same-day order)
+      // ✅ Check if invoice date is today OR in the past (Backdate or Same-Day)
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       const invoiceDateOnly = new Date(invoiceDate);
       invoiceDateOnly.setHours(0, 0, 0, 0);
 
-      const isSameDayOrder = invoiceDateOnly.getTime() === today.getTime();
+      const isEffectiveTransaction =
+        invoiceDateOnly.getTime() <= today.getTime();
 
-      if (isSameDayOrder) {
+      if (isEffectiveTransaction) {
         this.logger.log(
-          `[ORDER ${orderNumber}] Same-day order detected - recording inventory transactions`,
+          `[ORDER ${orderNumber}] Effective transaction detected (Date: ${invoiceDateOnly.toISOString()}) - recording inventory transactions`,
         );
 
         for (const item of items) {
@@ -406,7 +409,7 @@ export class OrdersService extends BaseResponse {
                 productCodeId: item.productCodeId,
                 quantity: item.quantity,
                 orderId: savedOrder.id,
-                invoiceDate: invoiceDate,
+                invoiceDate: invoiceDate, // Passed correctly
                 notes: createOrderDto.customerNotes,
               },
               userId,
@@ -427,7 +430,7 @@ export class OrdersService extends BaseResponse {
         }
       } else {
         this.logger.log(
-          `[ORDER ${orderNumber}] Future-dated order (invoice: ${invoiceDate.toISOString().split('T')[0]}) - skipping inventory transaction`,
+          `[ORDER ${orderNumber}] Future-dated order (invoice: ${invoiceDate.toISOString().split('T')[0]}) - skipping inventory transaction until that date`,
         );
       }
 
@@ -473,10 +476,24 @@ export class OrdersService extends BaseResponse {
 
     const queryBuilder = this.ordersRepo
       .createQueryBuilder('order')
-      .leftJoinAndSelect('order.customer', 'customer')
-      .leftJoinAndSelect('order.orderItems', 'orderItems')
-      .leftJoinAndSelect('orderItems.productCode', 'productCode')
-      .leftJoinAndSelect('productCode.product', 'product')
+      .leftJoin('order.customer', 'customer')
+      .leftJoin('order.orderItems', 'orderItems')
+      .leftJoin('orderItems.productCode', 'productCode')
+      .leftJoin('productCode.product', 'product')
+      .select([
+        'order',
+        'customer.id',
+        'customer.customerName',
+        'customer.customerCode',
+        'orderItems.id',
+        'orderItems.quantity',
+        'orderItems.price',
+        'orderItems.total',
+        'productCode.id',
+        'productCode.productCode',
+        'product.name',
+        'product.productType',
+      ])
       .orderBy('order.createdAt', 'DESC')
       .where('order.isDeleted = :isDeleted OR order.isDeleted IS NULL', {
         isDeleted: false,
@@ -652,21 +669,21 @@ export class OrdersService extends BaseResponse {
       throw new BadRequestException('deletedBy user ID is required');
     }
 
-    // ✅ Check if invoice date is today (same-day order) - reuse today variable from above
+    // ✅ Check if invoice date is today OR in the past - reusable logic
     const invoiceDateOnly = new Date(order.invoiceDate);
     invoiceDateOnly.setHours(0, 0, 0, 0);
 
-    const isSameDayOrder = invoiceDateOnly.getTime() === today.getTime();
+    const isEffectiveTransaction = invoiceDateOnly.getTime() <= today.getTime();
 
     // ✅ DETAILED LOGGING for debugging
     this.logger.log(
-      `[ORDER DELETE ${order.orderNumber}] Invoice Date: ${invoiceDateOnly.toISOString()}, Today: ${today.toISOString()}, isSameDayOrder: ${isSameDayOrder}`,
+      `[ORDER DELETE ${order.orderNumber}] Invoice Date: ${invoiceDateOnly.toISOString()}, Today: ${today.toISOString()}, isEffectiveTransaction: ${isEffectiveTransaction}`,
     );
 
-    if (isSameDayOrder) {
-      // ✅ SAME-DAY ORDER: Reverse inventory transaction
+    if (isEffectiveTransaction) {
+      // ✅ EFFECTIVE ORDER: Reverse inventory transaction (Same day or Backdated)
       this.logger.log(
-        `[ORDER ${order.orderNumber}] Same-day order - reversing inventory transactions for ${order.orderItems.length} items`,
+        `[ORDER ${order.orderNumber}] Effective order - reversing inventory transactions for ${order.orderItems.length} items`,
       );
 
       for (const orderItem of order.orderItems) {

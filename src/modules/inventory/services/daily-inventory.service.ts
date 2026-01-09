@@ -61,6 +61,143 @@ export class DailyInventoryService extends BaseResponse {
   }
 
   /**
+   * Update Stock with Date Propagation (Backdate Support)
+   *
+   * Purpose:
+   * - Updates stock for a specific date
+   * - If date is in the past, propagates changes to all subsequent days
+   * - Ensures data consistency across timeline
+   *
+   * @param productCodeId Product ID
+   * @param delta Change in quantity (positive or negative)
+   * @param info Date and metadata for the update
+   */
+  /**
+   * Update Stock with Date Propagation (Backdate Support)
+   *
+   * Purpose:
+   * - Updates stock for a specific date
+   * - If date is in the past, propagates changes to all subsequent days
+   * - Ensures data consistency across timeline
+   */
+  async updateStockWithPropagation(
+    productCodeId: number,
+    delta: number,
+    info: {
+      businessDate: string;
+      userId: number;
+      column:
+        | 'barangMasuk'
+        | 'dipesan'
+        | 'barangOutRepack'
+        | 'barangOutSample'
+        | 'barangOutProduksi'
+        | 'stokAwal';
+    },
+    transactionManager?: any, // EntityManager from generic
+  ) {
+    const { businessDate, userId, column } = info;
+    const today = getJakartaDateString();
+
+    // Use provided manager or default repo manager
+    const manager = transactionManager || this.dailyInventoryRepo.manager;
+
+    // 1. Get or Create inventory record for the specific date
+    let inventory = await manager.findOne(DailyInventory, {
+      where: { productCodeId, businessDate: businessDate },
+    });
+
+    if (!inventory) {
+      // Find previous day's stock for stokAwal
+      const prevInventory = await manager
+        .createQueryBuilder(DailyInventory, 'di')
+        .where('di.productCodeId = :productCodeId', { productCodeId })
+        .andWhere('di.businessDate < :businessDate', { businessDate })
+        .orderBy('di.businessDate', 'DESC')
+        .getOne();
+
+      const stokAwal = prevInventory ? Number(prevInventory.stokAkhir) : 0;
+
+      // Create new record
+      inventory = manager.create(DailyInventory, {
+        productCodeId,
+        businessDate: businessDate,
+        stokAwal,
+        isActive: true,
+        createdBy: userId,
+        // Initialize zeros
+        barangMasuk: 0,
+        dipesan: 0,
+        barangOutRepack: 0,
+        barangOutSample: 0,
+        barangOutProduksi: 0,
+        stokAkhir: stokAwal, // Approx
+      });
+    }
+
+    // 2. Update specific column
+    // Convert to number to handle any string issues
+    const currentVal = Number(inventory[column] || 0);
+    inventory[column] = currentVal + delta;
+    inventory.updatedBy = userId;
+
+    await manager.save(DailyInventory, inventory);
+
+    // 3. Propagate change to future days if backdate or if updating stokAwal
+    // Note: If updating stokAwal (e.g. adjustment), we always effect future days
+    if (businessDate < today || column === 'stokAwal') {
+      // Determine invalidation direction
+      // stokAkhir = stokAwal + barangMasuk - dipesan - barangOut...
+      // So if we add to 'dipesan', we REDUCE the stock.
+      let propagationDelta = delta;
+      if (
+        [
+          'dipesan',
+          'barangOutRepack',
+          'barangOutSample',
+          'barangOutProduksi',
+        ].includes(column)
+      ) {
+        propagationDelta = -delta;
+      }
+
+      await this.propagateStockChange(
+        productCodeId,
+        propagationDelta,
+        businessDate,
+        manager,
+      );
+    }
+
+    return inventory;
+  }
+
+  /**
+   * Propagate stock change to future days
+   * Updates 'stokAwal' for all daily_inventory records after the given date
+   */
+  private async propagateStockChange(
+    productCodeId: number,
+    delta: number,
+    fromDate: string,
+    manager: any,
+  ) {
+    await manager
+      .createQueryBuilder()
+      .update(DailyInventory)
+      .set({
+        stokAwal: () => `stokAwal + ${delta}`,
+      })
+      .where('productCodeId = :productCodeId', { productCodeId })
+      .andWhere('businessDate > :fromDate', { fromDate })
+      .execute();
+
+    this.logger.log(
+      `Propagated stock change of ${delta} for product ${productCodeId} from ${fromDate}`,
+    );
+  }
+
+  /**
    * GET /inventory/daily - Get daily inventory dengan filter
    *
    * Query params:
@@ -84,11 +221,24 @@ export class DailyInventoryService extends BaseResponse {
 
     const queryBuilder = this.dailyInventoryRepo
       .createQueryBuilder('di')
-      .leftJoinAndSelect('di.productCode', 'pc')
-      .leftJoinAndSelect('pc.product', 'product')
-      .leftJoinAndSelect('pc.size', 'size')
-      .leftJoinAndSelect('pc.category', 'mainCat') // SWAPPED: pc.category = Main Category (level 0)
-      .leftJoinAndSelect('product.category', 'subCat') // SWAPPED: product.category = Sub Category (level 1)
+      .leftJoin('di.productCode', 'pc')
+      .leftJoin('pc.product', 'product')
+      .leftJoin('pc.size', 'size')
+      .leftJoin('pc.category', 'mainCat')
+      .leftJoin('product.category', 'subCat')
+      .select([
+        'di',
+        'pc.id',
+        'pc.productCode',
+        'product.id',
+        'product.name',
+        'product.productType',
+        'size.id',
+        'size.sizeValue',
+        'size.unitOfMeasure',
+        'mainCat.name',
+        'subCat.name',
+      ])
       .where('di.businessDate = :businessDate', { businessDate: businessDate })
       .andWhere('di.deletedAt IS NULL');
 
@@ -294,48 +444,141 @@ export class DailyInventoryService extends BaseResponse {
       throw new NotFoundException(`Product code ${productCodeId} not found`);
     }
 
-    // Check if record already exists
-    const existing = await this.dailyInventoryRepo.findOne({
-      where: {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      // 1. Check if record already exists for the specific date
+      const existing = await queryRunner.manager.findOne(DailyInventory, {
+        where: {
+          productCodeId,
+          businessDate: businessDate as any,
+          deletedAt: IsNull(),
+        },
+      });
+
+      if (existing) {
+        throw new ConflictException(
+          `Daily inventory for product ${productCodeId} on ${businessDate} already exists`,
+        );
+      }
+
+      // 2. Create the initial record
+      const inventory = queryRunner.manager.create(DailyInventory, {
         productCodeId,
         businessDate,
-        deletedAt: IsNull(),
-      },
-    });
+        stokAwal: stokAwal || 0,
+        barangMasuk: 0,
+        dipesan: 0,
+        barangOutRepack: 0,
+        barangOutSample: 0,
+        barangOutProduksi: 0,
+        minimumStock,
+        maximumStock,
+        isActive: true,
+        notes,
+        createdBy: userId,
+        updatedBy: userId,
+      });
 
-    if (existing) {
-      throw new ConflictException(
-        `Daily inventory for product ${productCodeId} on ${businessDate} already exists`,
-      );
+      const saved = await queryRunner.manager.save(DailyInventory, inventory);
+
+      // 3. GAP FILLING & PROPAGATION LOGIC
+      // Strategy:
+      // a. Identify gaps between businessDate and Today.
+      // b. Fill gaps with "placeholder" records (stokAwal = 0).
+      // c. Run propagateStockChange to add the actual stokAwal to ALL future records (both gaps and existing).
+      // This ensures O(1) update for existing records and consistency for future dates.
+
+      const today = getJakartaDateString();
+      if (businessDate < today) {
+        let currentDate = new Date(businessDate);
+        currentDate.setDate(currentDate.getDate() + 1); // Start from next day
+
+        const endDate = new Date(today);
+
+        // Fetch all existing future records to identifying gaps
+        const futureRecords = await queryRunner.manager.find(DailyInventory, {
+          where: {
+            productCodeId,
+            businessDate: MoreThanOrEqual(this.formatDate(currentDate) as any),
+            deletedAt: IsNull(),
+          },
+          select: ['businessDate'], // We only need dates
+        });
+
+        const existingDates = new Set(
+          futureRecords.map(
+            (r) => new Date(r.businessDate).toISOString().split('T')[0],
+          ),
+        );
+
+        const gapRecords: DailyInventory[] = [];
+
+        // Loop to find gaps
+        while (currentDate <= endDate) {
+          const dateStr = this.formatDate(currentDate);
+
+          if (!existingDates.has(dateStr)) {
+            // Found a gap! Create placeholder record with 0 stock.
+            // transform will happen via propagation.
+            const gapRecord = queryRunner.manager.create(DailyInventory, {
+              productCodeId,
+              businessDate: dateStr as any,
+              stokAwal: 0, // Placeholder, will be updated by propagation
+              barangMasuk: 0,
+              dipesan: 0,
+              barangOutRepack: 0,
+              barangOutSample: 0,
+              barangOutProduksi: 0,
+              minimumStock, // Propagate settings
+              maximumStock,
+              isActive: true,
+              notes: 'Auto-filled gap date',
+              createdBy: userId,
+              updatedBy: userId,
+              // stokAkhir generated as 0
+            });
+            gapRecords.push(gapRecord);
+          }
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+
+        // Bulk Insert Gaps
+        if (gapRecords.length > 0) {
+          await queryRunner.manager.save(DailyInventory, gapRecords);
+        }
+
+        // 4. PROPAGATE CHANGE
+        // Now that gaps are filled with 0, and overlaps exist,
+        // we add the initial stock amount to ALL records > businessDate.
+        if (stokAwal && stokAwal !== 0) {
+          await this.propagateStockChange(
+            productCodeId,
+            stokAwal,
+            businessDate,
+            queryRunner.manager,
+          );
+        }
+      }
+
+      await queryRunner.commitTransaction();
+
+      // Reload to return
+      const result = await this.dailyInventoryRepo.findOne({
+        where: { id: saved.id },
+        relations: ['productCode'],
+      });
+
+      return this._success('Daily inventory created successfully', result);
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error('Failed to create initial inventory', error);
+      throw error;
+    } finally {
+      await queryRunner.release();
     }
-
-    // Create new record
-    const inventory = this.dailyInventoryRepo.create({
-      productCodeId,
-      businessDate,
-      stokAwal: stokAwal || 0,
-      barangMasuk: 0,
-      dipesan: 0,
-      barangOutRepack: 0,
-      barangOutSample: 0,
-      // stokAkhir is GENERATED COLUMN (auto-calculated)
-      minimumStock,
-      maximumStock,
-      isActive: true,
-      notes,
-      createdBy: userId,
-      updatedBy: userId,
-    });
-
-    const saved = await this.dailyInventoryRepo.save(inventory);
-
-    // Reload to get the generated stokAkhir value
-    const result = await this.dailyInventoryRepo.findOne({
-      where: { id: saved.id },
-      relations: ['productCode'],
-    });
-
-    return this._success('Daily inventory created successfully', result);
   }
 
   /**
@@ -858,5 +1101,26 @@ export class DailyInventoryService extends BaseResponse {
       summary,
       message: validationMessage,
     });
+  }
+
+  /**
+   * Get Product Codes registered in Daily Inventory
+   *
+   * Used by: Production Complete Batch Dialog
+   * Purpose: Only show product sizes/variants that actually exist in inventory system.
+   */
+  async getRegisteredProductCodes(productId: number) {
+    // Query Distinct ProductCodes that have entries in daily_inventory
+    return this.productCodesRepo
+      .createQueryBuilder('pc')
+      .innerJoin('daily_inventory', 'di', 'di.productCodeId = pc.id')
+      .where('pc.productId = :productId', { productId })
+      .andWhere('pc.isDeleted = :isDeleted', { isDeleted: false })
+      .select(['pc.id', 'pc.productCode', 'pc.sizeId'])
+      .distinct(true)
+      .leftJoinAndSelect('pc.size', 'size') // Join size for display
+      .leftJoinAndSelect('pc.product', 'product') // Join product for name
+      .leftJoinAndSelect('product.category', 'category') // Join category for display
+      .getMany();
   }
 }

@@ -15,6 +15,7 @@ import {
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import BaseResponse from '../../../common/response/base.response';
 import { ResponseSuccess } from '../../../common/interface/response.interface';
+import { DailyInventoryService } from './daily-inventory.service';
 
 /**
  * InventoryLegacyService
@@ -43,6 +44,7 @@ export class InventoryLegacyService extends BaseResponse {
     private readonly transactionRepo: Repository<InventoryTransactions>,
     @InjectRepository(ProductCodes)
     private readonly productCodesRepo: Repository<ProductCodes>,
+    private readonly dailyInventoryService: DailyInventoryService,
   ) {
     super();
   }
@@ -50,8 +52,8 @@ export class InventoryLegacyService extends BaseResponse {
   /**
    * Generate unique transaction number in format: TRX-YYYYMMDD-XXX
    */
-  private async generateTransactionNumber(): Promise<string> {
-    const today = new Date();
+  private async generateTransactionNumber(date?: Date): Promise<string> {
+    const today = date || new Date();
     const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
 
     const lastTransaction = await this.transactionRepo
@@ -73,8 +75,6 @@ export class InventoryLegacyService extends BaseResponse {
     return `TRX-${dateStr}-${sequence.toString().padStart(3, '0')}`;
   }
 
-  // ==================== ACTIVE METHODS (PRODUCTION MODULE) ====================
-
   /**
    * Check if materials are available for production batch
    * Validates stock availability for all materials needed
@@ -84,10 +84,12 @@ export class InventoryLegacyService extends BaseResponse {
    * ✅ MIGRATED: Now uses daily_inventory.stokAkhir instead of legacy inventory table
    *
    * @param materials Array of { productCodeId, quantity }
+   * @param date Optional date for backdate validation (YYYY-MM-DD)
    * @returns { available: boolean, insufficientMaterials: [] }
    */
   async checkMaterialAvailability(
     materials: Array<{ productCodeId: number; quantity: number }>,
+    date?: string,
   ): Promise<{
     available: boolean;
     insufficientMaterials: Array<{
@@ -101,10 +103,10 @@ export class InventoryLegacyService extends BaseResponse {
   }> {
     const insufficientMaterials = [];
     const today = new Date();
-    const businessDate = today.toISOString().split('T')[0];
+    const businessDate = date || today.toISOString().split('T')[0];
 
     for (const material of materials) {
-      // Get daily inventory for today
+      // Get daily inventory for target date
       const dailyInventory = await this.dailyInventoryRepo.findOne({
         where: {
           productCodeId: material.productCodeId,
@@ -167,6 +169,7 @@ export class InventoryLegacyService extends BaseResponse {
    * @param batchNumber Production batch number
    * @param materials Array of materials consumed
    * @param userId User performing the action
+   * @param productionDate Date of production (backdate support)
    */
   async recordMaterialProduction(
     batchNumber: string,
@@ -178,8 +181,16 @@ export class InventoryLegacyService extends BaseResponse {
     userId: number,
     performedBy?: string,
     notes?: string,
+    productionDate?: Date,
   ): Promise<ResponseSuccess> {
     const transactions = [];
+    const today = new Date();
+    const dateObj = productionDate ? new Date(productionDate) : today;
+    // Validate if date is valid
+    if (isNaN(dateObj.getTime())) {
+      throw new BadRequestException('Invalid production date');
+    }
+    const businessDate = dateObj.toISOString().split('T')[0];
 
     for (const material of materials) {
       // 1. Get product info first
@@ -194,62 +205,48 @@ export class InventoryLegacyService extends BaseResponse {
         );
       }
 
-      // 2. Check/create daily_inventory record
-      const today = new Date();
-      const businessDate = today.toISOString().split('T')[0];
+      // 2. Delegate to DailyInventoryService for update with propagation
+      // We pass delta as NEGATIVE because updateStockWithPropagation assumes generic delta
+      // Actually updateStockWithPropagation logic needs to be checked.
+      // Wait, updateStockWithPropagation is generic.
+      // But here we want to update specific column 'barangOutProduksi'.
+      // Propagation strictly updates 'stokAwal'.
 
-      let dailyInventory = await this.dailyInventoryRepo.findOne({
-        where: {
-          productCodeId: material.productCodeId,
-          businessDate: businessDate as any,
-        },
-      });
+      // Let's manually handle the update using DailyInventoryService helpers if available,
+      // or implement custom logic that calls propagation.
 
-      // Auto-create if missing
-      if (!dailyInventory) {
-        this.logger.warn(
-          `Creating missing daily inventory for product ${material.productCodeId} on ${businessDate}`,
+      // Since DailyInventoryService.updateStockWithPropagation is generic 'delta' on stokAwal??
+      // No, let's look at DailyInventoryService (it was just added).
+
+      // Re-reading DailyInventoryService logic:
+      // It updates stokAwal for future days.
+      // For CURRENT day, we still need to update the specific column (barangOutProduksi).
+
+      // 2. Delegate to DailyInventoryService for update with propagation
+      // Updates barangOutProduksi and correctly propagates negative stock change to future days
+      const dailyInventory =
+        await this.dailyInventoryService.updateStockWithPropagation(
+          material.productCodeId,
+          material.quantity, // Positive qty to increment barangOutProduksi
+          {
+            businessDate,
+            userId,
+            column: 'barangOutProduksi',
+          },
         );
 
-        dailyInventory = this.dailyInventoryRepo.create({
-          productCodeId: material.productCodeId,
-          businessDate: businessDate as any,
-          stokAwal: 0,
-          barangMasuk: 0,
-          dipesan: 0,
-          barangOutRepack: 0,
-          barangOutSample: 0,
-          barangOutProduksi: 0,
-          minimumStock: 0,
-          maximumStock: 0,
-          isActive: true,
-          createdBy: userId,
-        });
-
-        dailyInventory = await this.dailyInventoryRepo.save(dailyInventory);
-      }
-
-      // 3. Validate stock availability from daily_inventory
-      const availableStock = Number(dailyInventory.stokAkhir || 0);
-
-      if (availableStock < material.quantity) {
-        throw new BadRequestException(
-          `Stock tidak cukup untuk ${productCode.productCode}. Tersedia: ${availableStock}, Dibutuhkan: ${material.quantity}`,
-        );
-      }
-
-      // 4. Create PRODUCTION_MATERIAL_OUT transaction
+      // 4. Create Transaction Record
       const transaction = this.transactionRepo.create({
-        transactionNumber: await this.generateTransactionNumber(),
-        transactionDate: new Date(),
-        businessDate: this.formatDate(new Date()), // Business date for daily inventory tracking
+        transactionNumber: await this.generateTransactionNumber(dateObj),
+        transactionDate: dateObj,
+        businessDate: businessDate,
         transactionType: TransactionType.PRODUCTION_MATERIAL_OUT,
         productCodeId: material.productCodeId,
         quantity: -material.quantity, // Negative for OUT
         productionBatchNumber: batchNumber,
         notes: notes || `Material untuk batch ${batchNumber}`,
         performedBy: performedBy || undefined,
-        balanceAfter: availableStock - material.quantity,
+        balanceAfter: Number(dailyInventory.stokAkhir) - material.quantity, // Approx
         status: TransactionStatus.COMPLETED,
         createdBy: { id: userId } as any,
       });
@@ -257,18 +254,8 @@ export class InventoryLegacyService extends BaseResponse {
       await this.transactionRepo.save(transaction);
       transactions.push(transaction);
 
-      // 5. Update daily_inventory (increment barangOutProduksi)
-      const currentBarangOutProduksi = Number(
-        dailyInventory.barangOutProduksi ?? 0,
-      );
-      dailyInventory.barangOutProduksi =
-        currentBarangOutProduksi + material.quantity;
-      dailyInventory.updatedBy = userId;
-
-      await this.dailyInventoryRepo.save(dailyInventory);
-
       this.logger.log(
-        `Material ${productCode.productCode} consumed: ${material.quantity} ${material.unit || ''} for batch ${batchNumber}`,
+        `Material ${productCode.productCode} consumed: ${material.quantity} ${material.unit || ''} for batch ${batchNumber} on ${businessDate}`,
       );
     }
 
@@ -278,7 +265,6 @@ export class InventoryLegacyService extends BaseResponse {
       transactions,
     });
   }
-
   /**
    * Record finished goods from production (called after QC)
    * Creates PRODUCTION_IN transaction for passed QC quantity
@@ -300,6 +286,7 @@ export class InventoryLegacyService extends BaseResponse {
     userId: number,
     performedBy?: string,
     notes?: string,
+    productionDate?: Date,
   ): Promise<ResponseSuccess> {
     // Validate product exists
     const productCode = await this.productCodesRepo.findOne({
@@ -313,71 +300,57 @@ export class InventoryLegacyService extends BaseResponse {
       );
     }
 
-    // Get/create daily inventory for today
+    // Get/create daily inventory for target date
     const today = new Date();
-    const businessDate = today.toISOString().split('T')[0];
-
-    let dailyInventory = await this.dailyInventoryRepo.findOne({
-      where: {
-        productCodeId,
-        businessDate: businessDate as any,
-      },
-    });
-
-    // Auto-create if missing
-    if (!dailyInventory) {
-      this.logger.warn(
-        `Creating missing daily inventory for finished goods ${productCodeId} on ${businessDate}`,
-      );
-
-      dailyInventory = this.dailyInventoryRepo.create({
-        productCodeId,
-        businessDate: businessDate as any,
-        stokAwal: 0,
-        barangMasuk: 0,
-        dipesan: 0,
-        barangOutRepack: 0,
-        barangOutSample: 0,
-        barangOutProduksi: 0,
-        minimumStock: 0,
-        maximumStock: 0,
-        isActive: true,
-        createdBy: userId,
-      });
-
-      dailyInventory = await this.dailyInventoryRepo.save(dailyInventory);
+    const dateObj = productionDate ? new Date(productionDate) : today;
+    if (isNaN(dateObj.getTime())) {
+      throw new BadRequestException('Invalid production date');
     }
+    const businessDate = dateObj.toISOString().split('T')[0];
+
+    // 2. Delegate to DailyInventoryService for update with propagation
+    // Updates barangMasuk and correctly propagates positive stock change
+    const dailyInventory =
+      await this.dailyInventoryService.updateStockWithPropagation(
+        productCodeId,
+        quantity,
+        {
+          businessDate,
+          userId,
+          column: 'barangMasuk',
+        },
+      );
 
     const currentStokAkhir = Number(dailyInventory.stokAkhir || 0);
 
     // Create PRODUCTION_IN transaction
     const transaction = this.transactionRepo.create({
-      transactionNumber: await this.generateTransactionNumber(),
-      transactionDate: new Date(),
-      businessDate: this.formatDate(new Date()), // Business date for daily inventory tracking
+      transactionNumber: await this.generateTransactionNumber(dateObj),
+      transactionDate: dateObj,
+      businessDate: businessDate, // Business date for daily inventory tracking
       transactionType: TransactionType.PRODUCTION_IN,
       productCodeId,
       quantity,
       productionBatchNumber: batchNumber,
       notes: notes || `Hasil produksi batch ${batchNumber} (QC PASS)`,
       performedBy: performedBy || undefined,
-      balanceAfter: currentStokAkhir + quantity,
+      balanceAfter: currentStokAkhir + quantity, // Approx
       status: TransactionStatus.COMPLETED,
       createdBy: { id: userId } as any,
     });
 
     const savedTransaction = await this.transactionRepo.save(transaction);
 
-    // Update daily_inventory (increment barangMasuk)
-    const currentBarangMasuk = Number(dailyInventory.barangMasuk ?? 0);
-    dailyInventory.barangMasuk = currentBarangMasuk + quantity;
-    dailyInventory.updatedBy = userId;
+    // Update daily_inventory (increment barangMasuk) - ALREADY DONE ABOVE
+    // Just save again to be sure return value is fresh? No need.
 
-    const updatedDailyInventory =
-      await this.dailyInventoryRepo.save(dailyInventory);
+    // Refresh dailyInventory to get calculated stokAkhir if possible
+    const updatedDailyInventory = await this.dailyInventoryRepo.findOne({
+      where: { id: dailyInventory.id },
+    });
 
     this.logger.log(
-      `Finished goods ${productCode.productCode} recorded: ${quantity} units from batch ${batchNumber}`,
+      `Finished goods ${productCode.productCode} recorded: ${quantity} units from batch ${batchNumber} on ${businessDate}`,
     );
 
     return this._success('Barang jadi berhasil dicatat ke inventory', {

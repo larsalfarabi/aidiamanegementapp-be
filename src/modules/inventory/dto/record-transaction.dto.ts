@@ -116,6 +116,11 @@ export class RecordRepackingDto {
   @IsOptional()
   @IsString()
   performedBy?: string; // Staff yang melakukan
+
+  @IsOptional()
+  @IsDate()
+  @Type(() => Date)
+  repackingDate?: Date; // ✅ NEW: Date of repacking
 }
 
 /**
@@ -150,6 +155,11 @@ export class RecordSampleDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsDate()
+  @Type(() => Date)
+  sampleDate?: Date; // ✅ NEW: Date of sample out
 }
 
 /**
@@ -175,6 +185,11 @@ export class ReturnSampleDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsDate()
+  @Type(() => Date)
+  returnDate?: Date; // ✅ NEW: Date of sample return
 }
 
 /**
