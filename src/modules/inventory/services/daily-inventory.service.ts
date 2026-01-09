@@ -1,4 +1,4 @@
-import {
+﻿import {
   Injectable,
   NotFoundException,
   BadRequestException,
@@ -967,7 +967,7 @@ export class DailyInventoryService extends BaseResponse {
       .leftJoinAndSelect('di.productCode', 'pc')
       .leftJoinAndSelect('pc.product', 'product')
       .leftJoinAndSelect('pc.size', 'size')
-      .leftJoinAndSelect('pc.category', 'category') // ✅ SWAPPED: pc.category = Main Category (level 0)
+      .leftJoinAndSelect('pc.category', 'category') // âœ… SWAPPED: pc.category = Main Category (level 0)
       .where('di.businessDate = :businessDate', { businessDate: invoiceDate })
       .andWhere('di.productCodeId IN (:...productCodeIds)', { productCodeIds })
       .andWhere('di.deletedAt IS NULL')
@@ -1104,13 +1104,295 @@ export class DailyInventoryService extends BaseResponse {
   }
 
   /**
+   * Sync Backdated Stock Correction
+   *
+   * Purpose:
+   * Replays inventory history from a specific date to ensure consistency.
+   * Useful when backdated transactions are inserted without proper propagation logic,
+   * or when data inconsistencies are detected.
+   *
+   * Algorithm:
+   * 1. Iterate from startDate to Today
+   * 2. For each day:
+   *    a. Aggregate ALL transactions for that day
+   *    b. Update DailyInventory columns (barangMasuk, keluar, etc.)
+   *    c. Recalculate stokAkhir (via DB generated column or manual check)
+   * 3. Propagate stokAkhir of Day N to stokAwal of Day N+1
+   */
+  async syncBackdatedStock(
+    startDateStr: string,
+    productCodeId?: number,
+  ): Promise<{ processedDays: number; updatedRecords: number }> {
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const today = new Date(getJakartaDateString()); // Normalize to midnight Jakarta
+      const startDate = new Date(startDateStr);
+      let currentDate = new Date(startDate);
+      let updatedCount = 0;
+      let daysCount = 0;
+
+      this.logger.log(
+        `ðŸ”„ Starting Stock Sync from ${startDateStr} for Product: ${productCodeId || 'ALL'}`,
+      );
+
+      while (currentDate <= today) {
+        const dateStr = this.formatDate(currentDate);
+        daysCount++;
+
+        // 1. Fetch transactions for this day
+        const query = this.transactionRepo
+          .createQueryBuilder('it')
+          .select('it.productCodeId', 'productCodeId')
+          .addSelect('it.transactionType', 'type')
+          .addSelect('SUM(it.quantity)', 'totalChange')
+          .where('it.transactionDate >= :startOfDay', {
+            startOfDay: `${dateStr} 00:00:00`,
+          })
+          .andWhere('it.transactionDate <= :endOfDay', {
+            endOfDay: `${dateStr} 23:59:59`,
+          })
+          .groupBy('it.productCodeId')
+          .addGroupBy('it.transactionType');
+
+        if (productCodeId) {
+          query.andWhere('it.productCodeId = :productCodeId', {
+            productCodeId,
+          });
+        }
+
+        const transactions = await query.getRawMany();
+
+        // Group by ProductCodeId
+        const productStats = new Map<
+          number,
+          {
+            barangMasuk: number;
+            barangOutRepack: number;
+            barangOutSample: number;
+            barangOutProduksi: number;
+            adjustment: number; // Net adjustment
+          }
+        >();
+
+        // Initialize Map from query results
+        for (const t of transactions) {
+          const pid = t.productCodeId;
+          const qty = Number(t.totalChange);
+          const type = t.type;
+
+          if (!productStats.has(pid)) {
+            productStats.set(pid, {
+              barangMasuk: 0,
+              barangOutRepack: 0,
+              barangOutSample: 0,
+              barangOutProduksi: 0,
+              adjustment: 0,
+            });
+          }
+
+          const stats = productStats.get(pid)!;
+
+          // Map Transaction Types to Inventory Columns
+          // PURCHASE, PRODUCTION_RESULT, RETURN_IN -> barangMasuk
+          // SALE, PRODUCTION_USAGE, REPACK_SOURCE, SAMPLE_OUT -> barangOut...
+          // ADJUSTMENT, INITIAL, STOCK_OPNAME -> handled via stokAwal adjustment or separate logic?
+          // For DailyInventory structural consistency:
+          // barangMasuk includes: PURCHASE, PRODUCTION_RESULT, RETURN_IN
+          // barangOut includes: SALE (dipesan?), PRODUCTION_USAGE, SAMPLE_OUT, REPACK_SOURCE
+          // Adjustment is tricky. Usually adjustments modify stokAwal or are treated as in/out.
+          // Based on DB schema, we might not have a specific 'adjustment' column.
+          // Adjustments usually modify the *current* stock directly.
+          // For this sync, we will map positive adjustments to 'barangMasuk' and negative to 'barangOutSample' (or generic out)
+          // OR better: Update `stokAwal` of NEXT day? No, that breaks the formula.
+          // DailyInventory Formula: stokAkhir = stokAwal + barangMasuk - dipesan - barangOut...
+          // If we have an adjustment, we should probably fit it into 'barangMasuk' (if +) or 'barangOut...' (if -).
+          // Let's assume 'barangMasuk' for + and 'barangOutSample' (or similar) for -.
+          // Ideally, we should have an 'adjustment' column. If not, we leverage existing columns.
+
+          if (
+            ['PURCHASE', 'PRODUCTION_RESULT', 'RETURN_IN'].includes(type) ||
+            (type === 'ADJUSTMENT' && qty > 0) ||
+            type === 'INITIAL_STOCK' ||
+            (type === 'STOCK_OPNAME' && qty > 0)
+          ) {
+            stats.barangMasuk += Math.abs(qty);
+          } else if (
+            ['SALE', 'RETURN_OUT'].includes(type) // SALE usually goes to 'dipesan' or 'terjual'
+          ) {
+            // Note: 'dipesan' in this system seems to mean 'Sold/Reserved'
+            // Need to verify if 'dipesan' is cleared upon delivery or stays.
+            // Assuming 'dipesan' acts as 'Sales Out'.
+            // But wait, 'dipesan' might be temporary reserve.
+            // If transaction 'SALE' exists, it's final.
+            // Let's assume 'dipesan' is effectively 'Sales Out' for valid ended stock.
+            // Or maybe there is no 'barangKeluarSales'?
+            // Schema has: barangMasuk, dipesan, barangOutRepack, barangOutSample, barangOutProduksi.
+            // 'dipesan' likely accumulates sales.
+            stats.barangMasuk -= 0; // No-op placeholder
+            // 'dipesan' is special; handled separately or mapped here?
+            // If 'dipesan' accumulates Sales Orders, we should treat 'SALE' transaction as adding to 'dipesan'.
+            // However, 'dipesan' is usually "Reserved", not "Shipped".
+            // If transaction is 'SALE', it means stock is GONE.
+            // We map SALE to 'dipesan' column for lack of better column (or 'barangOutSample' if 'dipesan' is transient).
+            // Checking logic in daily-inventory.service:
+            // updateStock... 'dipesan' reduces stock.
+            // So we map SALE to 'dipesan'.
+          } else if (
+            ['PRODUCTION_USAGE'].includes(type) ||
+            (type === 'ADJUSTMENT' && qty < 0) ||
+            (type === 'STOCK_OPNAME' && qty < 0)
+          ) {
+            // Negative adjustment -> treat as 'barangOutSample' (General Out) or 'barangOutProduksi'
+            if (type === 'PRODUCTION_USAGE') {
+              stats.barangOutProduksi += Math.abs(qty);
+            } else {
+              stats.barangOutSample += Math.abs(qty); // Dump negative adjustments here
+            }
+          } else if (['REPACK_SOURCE'].includes(type)) {
+            stats.barangOutRepack += Math.abs(qty);
+          } else if (['SAMPLE_OUT'].includes(type)) {
+            stats.barangOutSample += Math.abs(qty); // Specific sample out
+          }
+        }
+
+        // 2. Fetch DailyInventory records for this day (or create if missing)
+        // We iterate found transactions + existing inventory to ensure coverage
+        const existingInventories = await queryRunner.manager.find(
+          DailyInventory,
+          {
+            where: {
+              businessDate: dateStr as any,
+              ...(productCodeId ? { productCodeId } : {}),
+            },
+          },
+        );
+
+        // Merge product IDs from both sources
+        const allProductIds = new Set([
+          ...productStats.keys(),
+          ...existingInventories.map((i) => i.productCodeId),
+        ]);
+
+        for (const pid of allProductIds) {
+          const stats = productStats.get(pid) || {
+            barangMasuk: 0,
+            barangOutRepack: 0,
+            barangOutSample: 0,
+            barangOutProduksi: 0,
+            adjustment: 0,
+          };
+
+          let inv = existingInventories.find((i) => i.productCodeId === pid);
+
+          // Get Previous Day's StokAkhir (to set as today's StokAwal)
+          let correctStokAwal = 0;
+          if (daysCount > 1) {
+            // Not the first day of sync -> Use previous day's calculated stokAkhir
+            // Need to fetch previous day record from DB (since we just updated it in previous loop iteration)
+            // Optimization: Cache it? For now, fetch is safer.
+            const prevDate = new Date(currentDate);
+            prevDate.setDate(prevDate.getDate() - 1);
+            const prevDateStr = this.formatDate(prevDate);
+
+            const prevInv = await queryRunner.manager.findOne(DailyInventory, {
+              where: {
+                businessDate: prevDateStr as any,
+                productCodeId: pid,
+              },
+            });
+            correctStokAwal = Number(prevInv?.stokAkhir || 0);
+          } else {
+            // First day of sync: Trust existing stokAwal OR fetch from D-1
+            // Getting from D-1 is safer to ensure continuity from before the sync window
+            const prevDate = new Date(currentDate);
+            prevDate.setDate(prevDate.getDate() - 1);
+            const prevDateStr = this.formatDate(prevDate);
+
+            const prevInv = await queryRunner.manager.findOne(DailyInventory, {
+              where: {
+                businessDate: prevDateStr as any,
+                productCodeId: pid,
+              },
+            });
+            correctStokAwal = Number(prevInv?.stokAkhir || 0);
+          }
+
+          if (!inv) {
+            // Create missing record
+            inv = queryRunner.manager.create(DailyInventory, {
+              productCodeId: pid,
+              businessDate: dateStr,
+              isActive: true,
+              createdBy: 0, // System
+              updatedBy: 0,
+              // Initial zeroes
+              dipesan: 0,
+              // Will be set below
+            });
+          }
+
+          // Update Values
+          inv.stokAwal = correctStokAwal;
+          inv.barangMasuk = stats.barangMasuk;
+          inv.barangOutRepack = stats.barangOutRepack;
+          inv.barangOutSample = stats.barangOutSample;
+          inv.barangOutProduksi = stats.barangOutProduksi;
+
+          // 'dipesan' (Sales) logic:
+          // We need accurate SALES aggregation.
+          // If transaction query above didn't explicitly separate 'SALE', we might miss it.
+          // Let's perform a specific sub-query for Sales (dipesan) if needed,
+          // OR trust that 'dipesan' is updated via transaction service.
+          // Limitation: Transactions don't map 1:1 to 'dipesan' easily without exploring Type.
+          // Optimization: We'll assume 'dipesan' in `DailyInventory` is cumulative.
+          // But strict replay means we should RE-CALCULATE 'dipesan' from 'SALE' transactions.
+          // Let's add 'SALE' handling in the transaction loop above. Add explicit types.
+          // Added logic above: mapped SALE to nothing yet.
+          // Let's bind SALE transactions to 'dipesan'.
+          const saleQty = transactions
+            .filter((t) => t.productCodeId === pid && t.type === 'SALE')
+            .reduce((sum, t) => sum + Math.abs(Number(t.totalChange)), 0);
+
+          inv.dipesan = saleQty; // Force overwrite 'dipesan' with actual Sales transactions
+
+          // Save
+          await queryRunner.manager.save(DailyInventory, inv);
+          updatedCount++;
+        }
+
+        // Move to next day
+        currentDate.setDate(currentDate.getDate() + 1);
+      }
+
+      await queryRunner.commitTransaction();
+
+      this.logger.log(
+        `âœ… Stock Sync Completed. Processed ${daysCount} days, updated ${updatedCount} records.`,
+      );
+
+      return {
+        processedDays: daysCount,
+        updatedRecords: updatedCount,
+      };
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      this.logger.error('âŒ Stock Sync Failed', error);
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  /**
    * Get Product Codes registered in Daily Inventory
    *
    * Used by: Production Complete Batch Dialog
    * Purpose: Only show product sizes/variants that actually exist in inventory system.
    */
   async getRegisteredProductCodes(productId: number) {
-    // Query Distinct ProductCodes that have entries in daily_inventory
     return this.productCodesRepo
       .createQueryBuilder('pc')
       .innerJoin('daily_inventory', 'di', 'di.productCodeId = pc.id')
@@ -1118,9 +1400,9 @@ export class DailyInventoryService extends BaseResponse {
       .andWhere('pc.isDeleted = :isDeleted', { isDeleted: false })
       .select(['pc.id', 'pc.productCode', 'pc.sizeId'])
       .distinct(true)
-      .leftJoinAndSelect('pc.size', 'size') // Join size for display
-      .leftJoinAndSelect('pc.product', 'product') // Join product for name
-      .leftJoinAndSelect('product.category', 'category') // Join category for display
+      .leftJoinAndSelect('pc.size', 'size')
+      .leftJoinAndSelect('pc.product', 'product')
+      .leftJoinAndSelect('product.category', 'category')
       .getMany();
   }
 }

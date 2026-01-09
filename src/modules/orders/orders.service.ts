@@ -476,24 +476,10 @@ export class OrdersService extends BaseResponse {
 
     const queryBuilder = this.ordersRepo
       .createQueryBuilder('order')
-      .leftJoin('order.customer', 'customer')
-      .leftJoin('order.orderItems', 'orderItems')
-      .leftJoin('orderItems.productCode', 'productCode')
-      .leftJoin('productCode.product', 'product')
-      .select([
-        'order',
-        'customer.id',
-        'customer.customerName',
-        'customer.customerCode',
-        'orderItems.id',
-        'orderItems.quantity',
-        'orderItems.price',
-        'orderItems.total',
-        'productCode.id',
-        'productCode.productCode',
-        'product.name',
-        'product.productType',
-      ])
+      .leftJoinAndSelect('order.customer', 'customer')
+      .leftJoinAndSelect('order.orderItems', 'orderItems')
+      .leftJoinAndSelect('orderItems.productCode', 'productCode')
+      .leftJoinAndSelect('productCode.product', 'product')
       .orderBy('order.createdAt', 'DESC')
       .where('order.isDeleted = :isDeleted OR order.isDeleted IS NULL', {
         isDeleted: false,
