@@ -1877,7 +1877,7 @@ export class InventoryTransactionService extends BaseResponse {
       .leftJoinAndSelect('productCode.product', 'product')
       .leftJoinAndSelect('productCode.size', 'size')
       .leftJoinAndSelect('productCode.category', 'mainCategory') // SWAPPED: pc.category = Main Category (level 0)
-      .leftJoin('product.category', 'subCategory'); // SWAPPED: product.category = Sub Category (level 1)
+      .leftJoinAndSelect('product.category', 'subCategory'); // SWAPPED: product.category = Sub Category (level 1)
 
     // Filter by productCodeId
     if (productCodeId) {
