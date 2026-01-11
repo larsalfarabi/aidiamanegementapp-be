@@ -274,8 +274,10 @@ export class DailyInventoryService extends BaseResponse {
     const skip = (page - 1) * pageSize;
     queryBuilder.skip(skip).take(pageSize);
 
-    // Order by product name
-    queryBuilder.orderBy('product.name', 'ASC');
+    // Order by latest updates first, then alphabetically for same timestamp
+    queryBuilder
+      .orderBy('di.updatedAt', 'DESC')
+      .addOrderBy('product.name', 'ASC');
 
     const items = await queryBuilder.getMany();
 
