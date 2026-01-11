@@ -50,13 +50,14 @@ export class OrdersService extends BaseResponse {
 
   /**
    * Generate order number in format: ORD-YYYYMMDD-XXX
+   * @param manager - EntityManager from active transaction (required for pessimistic lock)
    */
-  private async generateOrderNumber(): Promise<string> {
+  private async generateOrderNumber(manager: any): Promise<string> {
     const today = new Date();
     const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
 
-    const lastOrder = await this.ordersRepo
-      .createQueryBuilder('order')
+    const lastOrder = await manager
+      .createQueryBuilder(Orders, 'order')
       .setLock('pessimistic_write') // Prevent duplicates
       .where('order.orderNumber LIKE :pattern', { pattern: `ORD-${dateStr}-%` })
       .orderBy('order.orderNumber', 'DESC')
@@ -73,8 +74,13 @@ export class OrdersService extends BaseResponse {
 
   /**
    * Generate invoice number in format: SL/OJ-MKT/IX/25/0001
+   * @param invoiceDate - Date for the invoice
+   * @param manager - EntityManager from active transaction (required for pessimistic lock)
    */
-  private async generateInvoiceNumber(invoiceDate: Date): Promise<string> {
+  private async generateInvoiceNumber(
+    invoiceDate: Date,
+    manager: any,
+  ): Promise<string> {
     const month = invoiceDate.getMonth() + 1;
     const year = invoiceDate.getFullYear();
 
@@ -82,8 +88,8 @@ export class OrdersService extends BaseResponse {
     const startOfMonth = new Date(year, month - 1, 1);
     const endOfMonth = new Date(year, month, 0, 23, 59, 59);
 
-    const lastInvoice = await this.ordersRepo
-      .createQueryBuilder('order')
+    const lastInvoice = await manager
+      .createQueryBuilder(Orders, 'order')
       .setLock('pessimistic_write') // Prevent duplicates
       .where('order.invoiceNumber IS NOT NULL')
       .andWhere('order.invoiceDate BETWEEN :start AND :end', {
@@ -321,11 +327,14 @@ export class OrdersService extends BaseResponse {
           customer,
         );
 
-      // Generate order number
-      const orderNumber = await this.generateOrderNumber();
+      // Generate order number (using queryRunner.manager for transaction context)
+      const orderNumber = await this.generateOrderNumber(queryRunner.manager);
 
-      // ✅ Generate invoice number based on invoice date
-      const invoiceNumber = await this.generateInvoiceNumber(invoiceDate);
+      // ✅ Generate invoice number based on invoice date (using queryRunner.manager for transaction context)
+      const invoiceNumber = await this.generateInvoiceNumber(
+        invoiceDate,
+        queryRunner.manager,
+      );
 
       // Create order
       const order = new Orders();
@@ -480,10 +489,28 @@ export class OrdersService extends BaseResponse {
       .leftJoinAndSelect('order.orderItems', 'orderItems')
       .leftJoinAndSelect('orderItems.productCode', 'productCode')
       .leftJoinAndSelect('productCode.product', 'product')
-      .orderBy('order.createdAt', 'DESC')
       .where('order.isDeleted = :isDeleted OR order.isDeleted IS NULL', {
         isDeleted: false,
       });
+
+    // Smart Default Sorting: Today first, then by proximity to today
+    // Priority 0 = today, 1 = future (sorted ASC), 2 = past (sorted DESC)
+    queryBuilder
+      .addSelect(
+        `(CASE 
+          WHEN DATE(\`order\`.\`invoiceDate\`) = CURDATE() THEN 0
+          WHEN \`order\`.\`invoiceDate\` > CURDATE() THEN 1
+          ELSE 2
+        END)`,
+        'sort_priority',
+      )
+      .addSelect(
+        `ABS(DATEDIFF(\`order\`.\`invoiceDate\`, CURDATE()))`,
+        'date_distance',
+      )
+      .orderBy('sort_priority', 'ASC')
+      .addOrderBy('date_distance', 'ASC')
+      .addOrderBy('order.createdAt', 'DESC');
 
     // Apply filters
     if (filters.customerId) {
@@ -837,8 +864,10 @@ export class OrdersService extends BaseResponse {
             newInvoiceDate.getMonth() !== oldInvoiceDate.getMonth() ||
             newInvoiceDate.getFullYear() !== oldInvoiceDate.getFullYear()
           ) {
-            const newInvoiceNumber =
-              await this.generateInvoiceNumber(newInvoiceDate);
+            const newInvoiceNumber = await this.generateInvoiceNumber(
+              newInvoiceDate,
+              queryRunner.manager,
+            );
             existingOrder.invoiceNumber = newInvoiceNumber;
           }
         }

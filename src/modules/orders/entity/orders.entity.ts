@@ -1,5 +1,12 @@
 import { BaseEntity } from '../../../common/entities/base.entity';
-import { Entity, Column, ManyToOne, JoinColumn, OneToMany, Index } from 'typeorm';
+import {
+  Entity,
+  Column,
+  ManyToOne,
+  JoinColumn,
+  OneToMany,
+  Index,
+} from 'typeorm';
 import { Users } from '../../users/entities/users.entity';
 import { Customers } from '../../customers/entity/customers.entity';
 import { OrderItems } from './order_items.entity';
@@ -26,6 +33,7 @@ export class Orders extends BaseEntity {
   orderDate: Date; // Tanggal Order
 
   @Column({ type: 'date', nullable: true })
+  @Index() // Speed up smart sorting by invoice date
   invoiceDate: Date; // Tanggal Invoice
 
   @Column({ length: 500, nullable: true })
