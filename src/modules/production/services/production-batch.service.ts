@@ -196,7 +196,7 @@ export class ProductionBatchService extends BaseResponse {
           materialProductCodeId: material.materialProductCodeId,
           materialCode: productCode.productCode,
           materialName: productCode.product.name,
-          category: productCode.product.category?.name || 'Unknown',
+          category: productCode.category?.name || 'Unknown',
           unit: unit,
           requestedQuantity: material.plannedQuantity,
           availableStock,
