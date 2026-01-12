@@ -240,7 +240,7 @@ export class OrdersService extends BaseResponse {
         const baseName = [
           product.name || '',
           subCategory,
-          product.productType || '',
+          product.productType === 'SYRUP' ? '' : product.productType || '',
         ]
           .filter(Boolean)
           .join(' ');
