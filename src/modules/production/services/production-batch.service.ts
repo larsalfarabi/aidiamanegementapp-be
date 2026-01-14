@@ -993,6 +993,11 @@ export class ProductionBatchService extends BaseResponse {
           'materialUsages.materialProductCode',
           'materialUsages.materialProductCode.product',
           'materialUsages.materialProductCode.category',
+          'bottlingOutputs',
+          'bottlingOutputs.productCode',
+          'bottlingOutputs.productCode.size',
+          'bottlingOutputs.productCode.product',
+          'bottlingOutputs.productCode.product.category',
         ],
       });
 
