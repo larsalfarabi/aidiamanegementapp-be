@@ -1,4 +1,6 @@
 export enum Resource {
+DASHBOARD = 'dashboard',
+
   // System Management
   USER = 'user',
   ROLE = 'role',

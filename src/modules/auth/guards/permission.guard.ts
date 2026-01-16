@@ -13,6 +13,7 @@ import { Users } from '../../users/entities/users.entity';
 import { Repository } from 'typeorm';
 import { PERMISSIONS_KEY } from '../../../common/decorator/permission.decorator';
 import { RedisService } from '../../redis/redis.service';
+import { GqlExecutionContext } from '@nestjs/graphql';
 
 @Injectable()
 export class PermissionGuard implements CanActivate {
@@ -32,7 +33,14 @@ export class PermissionGuard implements CanActivate {
       return true;
     }
 
-    const request = context.switchToHttp().getRequest();
+    let request = context.switchToHttp().getRequest();
+    // GraphQL Support
+    if (!request) {
+      const gqlCtx = GqlExecutionContext.create(context);
+      const ctx = gqlCtx.getContext();
+      request = ctx.req;
+    }
+
     const user = request.user;
 
     if (!user) throw new UnauthorizedException('User not authenticated');

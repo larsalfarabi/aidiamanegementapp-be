@@ -8,6 +8,10 @@ import { Customers } from '../customers/entity/customers.entity';
 import { DailyInventory } from '../inventory/entity/daily-inventory.entity';
 import { ProductionBatches } from '../production/entities/production-batches.entity';
 
+import { DashboardResolver } from './dashboard.resolver';
+import { Users } from '../users/entities/users.entity';
+import { RedisModule } from '../redis/redis.module';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -16,9 +20,11 @@ import { ProductionBatches } from '../production/entities/production-batches.ent
       Customers,
       DailyInventory,
       ProductionBatches,
+      Users,
     ]),
+    RedisModule,
   ],
   controllers: [DashboardController],
-  providers: [DashboardService],
+  providers: [DashboardService, DashboardResolver],
 })
 export class DashboardModule {}
