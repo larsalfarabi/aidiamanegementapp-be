@@ -1,0 +1,147 @@
+# ------------------------------------------------------
+# THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
+# ------------------------------------------------------
+
+type ActiveCustomersByType {
+  """Number of Cafe & Resto customers who ordered this month"""
+  cafeResto: Int!
+
+  """Number of Catering customers who ordered this month"""
+  catering: Int!
+
+  """Number of Hotel customers who ordered this month"""
+  hotel: Int!
+
+  """Number of Reseller customers who ordered this month"""
+  reseller: Int!
+
+  """Total distinct customers who ordered this month"""
+  total: Int!
+}
+
+type BatchSummary {
+  batchNumber: String!
+  id: Int!
+  productName: String!
+  productionDate: String!
+  status: String!
+}
+
+type DashboardData {
+  activeCustomers: ActiveCustomersByType!
+  lowStockSummary: LowStockSummary!
+  productionSummary: ProductionSummary!
+  recentActivities: [RecentActivity!]!
+  salesByCustomerType: [SalesByCustomerType!]!
+  salesChart: [SalesChartData!]!
+  stats: DashboardStatsV2!
+  topProducts: [TopProduct!]!
+}
+
+type DashboardStatsV2 {
+  """Number of active production batches"""
+  activeBatches: Int!
+
+  """Number of low stock products"""
+  lowStockCount: Int!
+
+  """Total revenue this month"""
+  monthlyRevenue: Float!
+
+  """Number of new customers this month"""
+  newCustomersThisMonth: Int!
+
+  """Number of batches pending QC"""
+  qcPendingBatches: Int!
+
+  """Revenue change percentage vs yesterday"""
+  revenueChange: Float!
+
+  """Number of orders today"""
+  todayOrders: Int!
+
+  """Total revenue today"""
+  todayRevenue: Float!
+
+  """Total revenue yesterday"""
+  yesterdayRevenue: Float!
+}
+
+type LowStockItem {
+  currentStock: Float!
+  mainCategory: String!
+  minimumStock: Float!
+  productCode: String!
+  productCodeId: Int!
+  productName: String!
+}
+
+type LowStockSummary {
+  """Total count of low stock products"""
+  count: Int!
+
+  """Top critical low stock items"""
+  items: [LowStockItem!]!
+}
+
+type ProductionSummary {
+  """Batches completed today"""
+  completedToday: Int!
+
+  """Batches currently in progress"""
+  inProgressBatches: Int!
+
+  """Batches pending QC approval"""
+  qcPendingBatches: Int!
+
+  """Recent batch summaries"""
+  recentBatches: [BatchSummary!]!
+}
+
+type Query {
+  dashboardData: DashboardData!
+  dashboardStats: DashboardStatsV2!
+  salesChart: [SalesChartData!]!
+}
+
+type RecentActivity {
+  description: String!
+  id: String!
+  timestamp: String!
+  title: String!
+  type: String!
+  user: UserInfo!
+}
+
+type SalesByCustomerType {
+  """Number of orders from this customer type"""
+  orderCount: Int!
+
+  """Percentage of total revenue"""
+  percentage: Float!
+
+  """Total revenue from this customer type"""
+  revenue: Float!
+
+  """Customer type (Hotel, Cafe & Resto, etc.)"""
+  type: String!
+}
+
+type SalesChartData {
+  amount: Float!
+  date: String!
+}
+
+type TopProduct {
+  category: String!
+  id: String!
+  name: String!
+  revenue: Float!
+  sold: Int!
+  stock: Int!
+}
+
+type UserInfo {
+  initials: String!
+  name: String!
+}
