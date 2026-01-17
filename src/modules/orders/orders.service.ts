@@ -476,6 +476,8 @@ export class OrdersService extends BaseResponse {
 
   /**
    * Get all orders with filtering and pagination
+   * ✅ OPTIMIZED: Removed nested relations join (OrderItems, Product).
+   * Relies on denormalized columns for Customer data.
    */
   async findAll(
     query: PaginationDto,
@@ -485,10 +487,6 @@ export class OrdersService extends BaseResponse {
 
     const queryBuilder = this.ordersRepo
       .createQueryBuilder('order')
-      .leftJoinAndSelect('order.customer', 'customer')
-      .leftJoinAndSelect('order.orderItems', 'orderItems')
-      .leftJoinAndSelect('orderItems.productCode', 'productCode')
-      .leftJoinAndSelect('productCode.product', 'product')
       .where('order.isDeleted = :isDeleted OR order.isDeleted IS NULL', {
         isDeleted: false,
       });
