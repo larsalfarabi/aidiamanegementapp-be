@@ -20,6 +20,7 @@ import {
   InvoiceDetailDto,
   CustomerSalesReportSummaryDto,
 } from './dto/customer-sales-report.dto';
+import { ProductSalesExportQueryDto } from './dto/product-sales-export.dto';
 
 @Injectable()
 export class ReportsService {
@@ -100,8 +101,7 @@ export class ReportsService {
     }
 
     // Order by invoice date DESC
-    queryBuilder.orderBy('order.invoiceDate', 'DESC');
-    queryBuilder.addOrderBy('order.invoiceNumber', 'DESC');
+    queryBuilder.orderBy('order.invoiceNumber', 'DESC');
 
     const [result, count] = await queryBuilder
       .take(pageSize)
@@ -329,139 +329,135 @@ export class ReportsService {
    * Get Customer Sales Report with pagination, filtering, and aggregation
    * Groups data by customer with invoice details
    */
+  /**
+   * ✅ OPTIMIZED: Get Customer Sales Report with SQL Aggregation
+   * No longer fetching all rows into memory.
+   * Uses GROUP BY to calculate totals efficiently.
+   */
   async getCustomerSalesReport(
     query: CustomerSalesReportQueryDto,
   ): Promise<CustomerSalesReportResponseDto> {
     const { from, to, customerType, search, page, pageSize, limit } = query;
 
-    // Step 1: Build base query to get orders with customer info
+    // 1. Calculate Pagination Limit/Offset
+    const take = pageSize || 10;
+    const skip = limit || 0;
+
+    // 2. Build Query using GROUP BY
+    // We join OrderItems to calculate accurate totals (Units, DPP, NetSales)
     const queryBuilder = this.ordersRepository
       .createQueryBuilder('order')
-      .leftJoinAndSelect('order.customer', 'customer')
-      .leftJoinAndSelect('order.orderItems', 'orderItems')
-      .where('order.invoiceNumber IS NOT NULL') // Only orders with invoices
+      .leftJoin('order.customer', 'customer')
+      .leftJoin('order.orderItems', 'orderItems')
+      .select([
+        'customer.id AS customerId',
+        'customer.customerCode AS customerCode',
+        'customer.customerName AS customerName',
+        'customer.customerType AS customerType',
+      ])
+      // Aggregates
+      .addSelect('COUNT(DISTINCT order.id)', 'totalInvoices')
+      .addSelect('SUM(orderItems.quantity)', 'totalUnits')
+      // Net Sales calculation (DPP - Discount)
+      // DPP = Qty * Price
+      // Discount = (DPP * Disc%) / 100
+      // Net = DPP - Discount
+      .addSelect('SUM(orderItems.quantity * orderItems.unitPrice)', 'totalDPP')
+      .addSelect(
+        'SUM((orderItems.quantity * orderItems.unitPrice) - ((orderItems.quantity * orderItems.unitPrice * orderItems.discountPercentage) / 100))',
+        'totalNetSales',
+      )
+      .where('order.invoiceNumber IS NOT NULL')
       .andWhere('(order.isDeleted = :isDeleted OR order.isDeleted IS NULL)', {
         isDeleted: false,
-      }); // Handle both false and NULL
+      });
 
-    // Date range filter
+    // Filters
     if (from) {
       queryBuilder.andWhere('order.invoiceDate >= :from', { from });
     }
     if (to) {
       queryBuilder.andWhere('order.invoiceDate <= :to', { to });
     }
-
-    // Customer type filter
     if (customerType) {
       queryBuilder.andWhere('customer.customerType = :customerType', {
         customerType,
       });
     }
-
-    // Search filter (customer name)
     if (search) {
       queryBuilder.andWhere('customer.customerName LIKE :search', {
         search: `%${search}%`,
       });
     }
 
-    // Order by customer name
-    queryBuilder.orderBy('customer.customerName', 'ASC');
-    queryBuilder.addOrderBy('order.invoiceDate', 'DESC');
+    // Grouping & Sorting
+    queryBuilder
+      .groupBy('customer.id')
+      .addGroupBy('customer.customerCode')
+      .addGroupBy('customer.customerName')
+      .addGroupBy('customer.customerType')
+      .orderBy('totalNetSales', 'DESC'); // Default sort by Highest Sales
 
-    // Execute query
-    const allOrders = await queryBuilder.getMany();
-
-    // Step 2: Group orders by customer and aggregate
-    const customerMap = new Map<number, CustomerSalesDataDto>();
-
-    allOrders.forEach((order) => {
-      const customerId = order.customerId;
-
-      if (!customerMap.has(customerId)) {
-        customerMap.set(customerId, {
-          customerId,
-          customerName: order.customerName,
-          customerType: order.customer.customerType,
-          totalInvoices: 0,
-          totalUnits: 0,
-          totalDPP: 0,
-          totalDiscount: 0,
-          totalNetSales: 0,
-          invoices: [],
-        });
-      }
-
-      const customerData = customerMap.get(customerId)!;
-
-      // Calculate invoice totals
-      let invoiceUnits = 0;
-      let invoiceDPP = 0;
-      let invoiceNetSales = 0;
-      let totalDiscountAmount = 0;
-
-      order.orderItems.forEach((item) => {
-        const dpp = item.quantity * item.unitPrice;
-        const discountAmount = (dpp * item.discountPercentage) / 100;
-        const netSales = dpp - discountAmount;
-
-        invoiceUnits += item.quantity;
-        invoiceDPP += dpp;
-        invoiceNetSales += netSales;
-        totalDiscountAmount += discountAmount;
+    // 3. Get Count (for Pagination) - needs separate query or count of distinct customers
+    // getManyAndCount doesn't work well with GROUP BY for 'count'
+    const countQuery = this.ordersRepository
+      .createQueryBuilder('order')
+      .leftJoin('order.customer', 'customer')
+      .select('COUNT(DISTINCT customer.id)', 'total')
+      .where('order.invoiceNumber IS NOT NULL')
+      .andWhere('(order.isDeleted = :isDeleted OR order.isDeleted IS NULL)', {
+        isDeleted: false,
       });
 
-      // Calculate average discount percentage for this invoice
-      const avgDiscount =
-        invoiceDPP > 0 ? (totalDiscountAmount / invoiceDPP) * 100 : 0;
-
-      // Add invoice detail
-      customerData.invoices.push({
-        invoiceNumber: order.invoiceNumber,
-        invoiceDate: order.invoiceDate,
-        unit: invoiceUnits,
-        dpp: Number(invoiceDPP.toFixed(2)),
-        discount: Number(avgDiscount.toFixed(2)),
-        netSales: Number(invoiceNetSales.toFixed(2)),
+    // Apply same filters to count query
+    if (from) countQuery.andWhere('order.invoiceDate >= :from', { from });
+    if (to) countQuery.andWhere('order.invoiceDate <= :to', { to });
+    if (customerType)
+      countQuery.andWhere('customer.customerType = :customerType', {
+        customerType,
+      });
+    if (search)
+      countQuery.andWhere('customer.customerName LIKE :search', {
+        search: `%${search}%`,
       });
 
-      // Update customer totals
-      customerData.totalInvoices++;
-      customerData.totalUnits += invoiceUnits;
-      customerData.totalDPP += invoiceDPP;
-      customerData.totalNetSales += invoiceNetSales;
+    const countResult = await countQuery.getRawOne();
+    const total = parseInt(countResult?.total || '0');
+
+    // 4. Get Data
+    const rawData = await queryBuilder.limit(take).offset(skip).getRawMany();
+
+    // 5. Transform Aggregated Data
+    const customers: CustomerSalesDataDto[] = rawData.map((row) => {
+      const totalDPP = Number(row.totalDPP || 0);
+      const totalNetSales = Number(row.totalNetSales || 0);
+
+      // Calculate Average Discount % from totals
+      // (TotalDPP - TotalNet) / TotalDPP * 100
+      const totalDiscountAmount = totalDPP - totalNetSales;
+      const totalDiscount =
+        totalDPP > 0 ? (totalDiscountAmount / totalDPP) * 100 : 0;
+
+      return {
+        customerId: row.customerId,
+        customerCode: row.customerCode,
+        customerName: row.customerName,
+        customerType: row.customerType,
+        totalInvoices: Number(row.totalInvoices),
+        totalUnits: Number(row.totalUnits),
+        totalDPP: Number(totalDPP.toFixed(2)),
+        totalDiscount: Number(totalDiscount.toFixed(2)),
+        totalNetSales: Number(totalNetSales.toFixed(2)),
+        invoices: [], // Lazy loaded later
+      };
     });
 
-    // Calculate average discount for each customer
-    customerMap.forEach((customer) => {
-      if (customer.totalDPP > 0) {
-        const totalDiscountAmount = customer.totalDPP - customer.totalNetSales;
-        customer.totalDiscount = Number(
-          ((totalDiscountAmount / customer.totalDPP) * 100).toFixed(2),
-        );
-      }
-      // Round totals
-      customer.totalDPP = Number(customer.totalDPP.toFixed(2));
-      customer.totalNetSales = Number(customer.totalNetSales.toFixed(2));
-    });
-
-    // Convert Map to Array and sort by totalNetSales DESC
-    const allCustomers = Array.from(customerMap.values()).sort(
-      (a, b) => b.totalNetSales - a.totalNetSales,
-    );
-
-    // Step 3: Apply pagination
-    const total = allCustomers.length;
-    const startIndex = limit || 0;
-    const endIndex = startIndex + (pageSize || 10);
-    const paginatedCustomers = allCustomers.slice(startIndex, endIndex);
-
-    // Step 4: Calculate summary
-    const summary = this.calculateCustomerSummary(allCustomers);
+    // 6. Get Summary (Fast Aggregate)
+    // We can reuse the total calculation logic or simple query
+    const summary = await this.getCustomerReportSummary(query);
 
     return {
-      data: paginatedCustomers,
+      data: customers,
       summary,
       pagination: {
         total,
@@ -472,33 +468,111 @@ export class ReportsService {
   }
 
   /**
-   * Calculate summary statistics for customer sales report
+   * Helper: Get Summary for Customer Reports
    */
-  private calculateCustomerSummary(
-    customers: CustomerSalesDataDto[],
-  ): CustomerSalesReportSummaryDto {
-    const totalRevenue = customers.reduce((sum, c) => sum + c.totalNetSales, 0);
-    const totalInvoices = customers.reduce(
-      (sum, c) => sum + c.totalInvoices,
-      0,
-    );
-    const totalCustomers = customers.length;
+  async getCustomerReportSummary(
+    query: CustomerSalesReportQueryDto,
+  ): Promise<CustomerSalesReportSummaryDto> {
+    const { from, to, customerType, search } = query;
+
+    const queryBuilder = this.ordersRepository
+      .createQueryBuilder('order')
+      .leftJoin('order.customer', 'customer')
+      .leftJoin('order.orderItems', 'orderItems')
+      .select([
+        'COUNT(DISTINCT order.id) as totalInvoices',
+        'COUNT(DISTINCT customer.id) as totalCustomers',
+        'SUM((orderItems.quantity * orderItems.unitPrice) - ((orderItems.quantity * orderItems.unitPrice * orderItems.discountPercentage) / 100)) as totalRevenue',
+        'SUM(orderItems.quantity * orderItems.unitPrice) as totalDPP',
+      ])
+      .where('order.invoiceNumber IS NOT NULL')
+      .andWhere('(order.isDeleted = :isDeleted OR order.isDeleted IS NULL)', {
+        isDeleted: false,
+      });
+
+    if (from) queryBuilder.andWhere('order.invoiceDate >= :from', { from });
+    if (to) queryBuilder.andWhere('order.invoiceDate <= :to', { to });
+    if (customerType)
+      queryBuilder.andWhere('customer.customerType = :customerType', {
+        customerType,
+      });
+    if (search)
+      queryBuilder.andWhere('customer.customerName LIKE :search', {
+        search: `%${search}%`,
+      });
+
+    const result = await queryBuilder.getRawOne();
+
+    const totalRevenue = Number(result.totalRevenue || 0);
+    const totalCustomers = Number(result.totalCustomers || 0);
+    const totalDPP = Number(result.totalDPP || 0);
+
     const avgPerCustomer =
       totalCustomers > 0 ? totalRevenue / totalCustomers : 0;
-
-    // Calculate weighted average discount
-    const totalDPP = customers.reduce((sum, c) => sum + c.totalDPP, 0);
     const totalDiscountAmount = totalDPP - totalRevenue;
     const avgDiscount =
       totalDPP > 0 ? (totalDiscountAmount / totalDPP) * 100 : 0;
 
     return {
       totalRevenue: Number(totalRevenue.toFixed(2)),
-      totalInvoices,
+      totalInvoices: Number(result.totalInvoices || 0),
       totalCustomers,
       avgPerCustomer: Number(avgPerCustomer.toFixed(2)),
       avgDiscount: Number(avgDiscount.toFixed(2)),
     };
+  }
+
+  /**
+   * ✅ NEW Endpoint for Lazy Loading: Get Invoices for Specific Customer
+   */
+  async getCustomerInvoices(
+    customerId: number,
+    query: CustomerSalesReportQueryDto,
+  ): Promise<InvoiceDetailDto[]> {
+    const { from, to } = query;
+
+    const queryBuilder = this.ordersRepository
+      .createQueryBuilder('order')
+      .leftJoin('order.orderItems', 'orderItems')
+      .select([
+        'order.invoiceNumber AS invoiceNumber',
+        'order.invoiceDate AS invoiceDate',
+        'SUM(orderItems.quantity) AS unit',
+        'SUM(orderItems.quantity * orderItems.unitPrice) AS dpp',
+        'SUM((orderItems.quantity * orderItems.unitPrice) - ((orderItems.quantity * orderItems.unitPrice * orderItems.discountPercentage) / 100)) AS netSales',
+      ])
+      .where('order.customerId = :customerId', { customerId })
+      .andWhere('order.invoiceNumber IS NOT NULL')
+      .andWhere('(order.isDeleted = :isDeleted OR order.isDeleted IS NULL)', {
+        isDeleted: false,
+      });
+
+    if (from) queryBuilder.andWhere('order.invoiceDate >= :from', { from });
+    if (to) queryBuilder.andWhere('order.invoiceDate <= :to', { to });
+
+    queryBuilder
+      .groupBy('order.id')
+      .addGroupBy('order.invoiceNumber')
+      .addGroupBy('order.invoiceDate')
+      .orderBy('order.invoiceNumber', 'DESC');
+
+    const rawData = await queryBuilder.getRawMany();
+
+    return rawData.map((row) => {
+      const dpp = Number(row.dpp || 0);
+      const netSales = Number(row.netSales || 0);
+      const discountAmount = dpp - netSales;
+      const discount = dpp > 0 ? (discountAmount / dpp) * 100 : 0;
+
+      return {
+        invoiceNumber: row.invoiceNumber,
+        invoiceDate: row.invoiceDate,
+        unit: Number(row.unit),
+        dpp: Number(dpp.toFixed(2)),
+        discount: Number(discount.toFixed(2)),
+        netSales: Number(netSales.toFixed(2)),
+      };
+    });
   }
 
   // ============================================================================
@@ -552,8 +626,7 @@ export class ReportsService {
     }
 
     // Order by invoice date DESC (most recent first)
-    queryBuilder.orderBy('order.invoiceDate', 'DESC');
-    queryBuilder.addOrderBy('order.invoiceNumber', 'ASC');
+    queryBuilder.orderBy('order.invoiceNumber', 'DESC');
 
     const orders = await queryBuilder.getMany();
 
@@ -903,7 +976,7 @@ export class ReportsService {
    * Difference from customer export: Shows EACH order item as separate row
    */
   async generateProductSalesExcel(
-    query: ProductSalesReportQueryDto,
+    query: ProductSalesExportQueryDto,
     metadata: {
       userName: string;
       exportedAt: string;
@@ -919,7 +992,7 @@ export class ReportsService {
       .leftJoinAndSelect('order.orderItems', 'orderItems')
       .leftJoinAndSelect('orderItems.productCode', 'productCode')
       .leftJoinAndSelect('productCode.product', 'product')
-      .leftJoinAndSelect('productCode.category', 'category') // ✅ SWAPPED: productCode.category = Main Category (level 0)
+      .leftJoinAndSelect('product.category', 'category') // ✅ SWAPPED: productCode.category = Main Category (level 0)
       .leftJoinAndSelect('productCode.size', 'size')
       .where('order.invoiceNumber IS NOT NULL')
       .andWhere('(order.isDeleted = :isDeleted OR order.isDeleted IS NULL)', {
@@ -956,8 +1029,7 @@ export class ReportsService {
     }
 
     // Order by invoice date DESC (most recent first)
-    queryBuilder.orderBy('order.invoiceDate', 'DESC');
-    queryBuilder.addOrderBy('order.invoiceNumber', 'ASC');
+    queryBuilder.orderBy('order.invoiceNumber', 'DESC');
 
     const orders = await queryBuilder.getMany();
 
@@ -1047,11 +1119,13 @@ export class ReportsService {
 
         // Construct product name from category + product + size
         const productName = item.productCode?.product?.name || 'N/A';
-        const categoryName = item.productCode?.category?.name || '';
+        const categoryName = item.productCode?.product?.category?.name || '';
         const sizeName = item.productCode?.size?.sizeValue || '';
-        const namaBarang = [categoryName, productName, sizeName]
-          .filter(Boolean)
-          .join(' ');
+        const productType =
+          item.productCode?.product?.category?.name === 'Simple Syrup'
+            ? ''
+            : item.productCode?.product?.productType;
+        const namaBarang = `${productName} ${categoryName.toUpperCase()} ${productType} @ ${sizeName}`;
 
         // Check if this item has anomalies
         const hasAnomalies = anomalyMap.has(

@@ -74,7 +74,7 @@ export class ProductionFormulaService extends BaseResponse {
       .replace(/\s+/g, '')
       .replace(/[^A-Z0-9]/g, '');
 
-    return `FORMULA-${cleanProductName}-${cleanCategoryName}-${cleanProductType}-v${version}`;
+    return `FORMULA-${cleanProductName}-${cleanCategoryName}${cleanProductType === 'UNKNOWN' ? '' : `-${cleanProductType}`}-v${version}`;
   }
 
   /**
@@ -267,19 +267,22 @@ export class ProductionFormulaService extends BaseResponse {
 
       const queryBuilder = this.formulaRepository
         .createQueryBuilder('formula')
-        .leftJoinAndSelect('formula.product', 'product')
-        .leftJoinAndSelect('product.category', 'productCategory')
-        .leftJoinAndSelect('formula.productCode', 'productCode')
-        .leftJoinAndSelect('formula.materials', 'materials')
-        .leftJoinAndSelect(
-          'materials.materialProductCode',
-          'materialProductCode',
-        )
-        .leftJoinAndSelect('materialProductCode.product', 'materialProduct')
-        .leftJoinAndSelect(
-          'materialProductCode.category',
-          'materialProductCodeCategory',
-        )
+        .select([
+          'formula.id',
+          'formula.formulaCode',
+          'formula.formulaName',
+          'formula.version',
+          'formula.isActive',
+          'formula.effectiveFrom',
+          'formula.effectiveTo',
+          'formula.createdAt', // Needed for ordering
+        ])
+        .leftJoin('formula.product', 'product')
+        .addSelect(['product.name', 'product.productType'])
+        .leftJoin('product.category', 'productCategory')
+        .addSelect(['productCategory.name'])
+        // Optimasi: Tidak load details materials, hanya hitung jumlahnya
+        .loadRelationCountAndMap('formula.materialsCount', 'formula.materials')
         .orderBy('formula.createdAt', 'DESC');
 
       // Apply filters
@@ -369,7 +372,9 @@ export class ProductionFormulaService extends BaseResponse {
           'materials',
           'materials.materialProductCode',
           'materials.materialProductCode.product',
+          'materials.materialProductCode.product.category', // Products.category = Sub Category (level 1)
           'materials.materialProductCode.category', // Products.category = Sub Category (level 1)
+          'materials.materialProductCode.size', // Products.category = Sub Category (level 1)
         ],
       });
 

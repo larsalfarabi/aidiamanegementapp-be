@@ -1,8 +1,9 @@
 import { IsOptional, IsDate, IsEnum, IsInt, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { PaginationDto } from 'src/common/dto/pagination.dto';
 
-export class ProductSalesReportQueryDto {
+export class ProductSalesReportQueryDto extends PaginationDto {
   @ApiPropertyOptional({
     description: 'Start date for the report (YYYY-MM-DD)',
     example: '2025-09-01',
@@ -38,45 +39,12 @@ export class ProductSalesReportQueryDto {
   productCategory?: string;
 
   @ApiPropertyOptional({
-    description: 'Search by invoice number or customer name',
-    example: 'SL/O+MKT',
-  })
-  @IsOptional()
-  search?: string;
-
-  @ApiPropertyOptional({
     description: 'Show only invoices with data quality alerts',
     example: false,
   })
   @IsOptional()
   @Type(() => Boolean)
   alertsOnly?: boolean;
-
-  @ApiPropertyOptional({
-    description: 'Page number for pagination',
-    example: 1,
-    minimum: 1,
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  page?: number = 1;
-
-  @IsInt()
-  @Type(() => Number)
-  pageSize?: number;
-
-  @ApiPropertyOptional({
-    description: 'Number of items per page',
-    example: 10,
-    minimum: 1,
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  limit?: number;
 }
 
 export class OrderItemDetailDto {

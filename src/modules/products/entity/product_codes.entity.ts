@@ -27,6 +27,12 @@ export class ProductCodes extends BaseEntity {
   @Column({ default: true })
   isActive: boolean;
 
+  @Column({
+    default: false,
+    comment: 'Flag to determine if this finished good can be used as material',
+  })
+  canBeMaterial: boolean;
+
   @Column({ default: false })
   isDeleted: boolean;
 

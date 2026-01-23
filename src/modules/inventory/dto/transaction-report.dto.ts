@@ -10,12 +10,13 @@ import {
   IsArray,
   ValidateNested,
 } from 'class-validator';
+import { PaginationDto } from '../../../common/dto/pagination.dto';
 
 /**
  * DTO for Transaction Report Filters
  * Used by both Finished Goods and Materials reports
  */
-export class TransactionReportFiltersDto {
+export class TransactionReportFiltersDto extends PaginationDto {
   @IsOptional()
   @IsDateString()
   startDate?: string; // YYYY-MM-DD
@@ -31,18 +32,6 @@ export class TransactionReportFiltersDto {
   @IsOptional()
   @IsInt()
   productCodeId?: number; // Filter by specific product
-
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Type(() => Number)
-  page?: number = 1;
-
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Type(() => Number)
-  pageSize?: number = 50;
 }
 
 /**

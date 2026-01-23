@@ -1,6 +1,6 @@
 import { Entity, Column, ManyToOne, JoinColumn, Index } from 'typeorm';
 import { BaseEntity } from '../../../common/entities/base.entity';
-import type { ProductionBatches } from './production-batches.entity';
+import { ProductionBatches } from './production-batches.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { Users } from '../../users/entities/users.entity';
 
@@ -38,7 +38,7 @@ import { Users } from '../../users/entities/users.entity';
  *
  * Date: December 16, 2024
  */
-@Entity({ name: 'production_bottling_outputs', synchronize: true })
+@Entity({ name: 'production_bottling_outputs', synchronize: false })
 @Index(['batchId'])
 @Index(['productCodeId'])
 export class ProductionBottlingOutput extends BaseEntity {
@@ -48,7 +48,7 @@ export class ProductionBottlingOutput extends BaseEntity {
   })
   batchId: number;
 
-  @ManyToOne("ProductionBatches", (batch: any) => batch.bottlingOutputs, {
+  @ManyToOne(() => ProductionBatches, (batch) => batch.bottlingOutputs, {
     onDelete: 'CASCADE',
   })
   @JoinColumn({ name: 'batchId' })

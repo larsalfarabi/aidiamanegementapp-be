@@ -28,6 +28,14 @@ export class Products extends BaseEntity {
   @Column({ default: true })
   isActive: boolean;
 
+  // ✅ NEW: Flag untuk menandai barang yang bisa diproduksi (misal: Gula Cair dari Gula Pasir)
+  // Default false (kecuali Barang Jadi yang secara implisit bisa diproduksi)
+  @Column({
+    default: false,
+    comment: 'Flag to indicate if this product can be a production output',
+  })
+  canBeProduced: boolean;
+
   @ManyToOne(() => Users)
   @JoinColumn({ name: 'createdBy' })
   createdBy: Users;

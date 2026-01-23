@@ -1,5 +1,10 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsDateString, IsOptional } from 'class-validator';
+import { IsDateString, IsEnum, IsOptional } from 'class-validator';
+
+export enum MainCategoryType {
+  SUB = 'SUB', // Filter by Sub-Category (existing behavior)
+  BARANG_BAKU = 'BARANG_BAKU', // Filter by Barang Baku with canBeProduced=true
+}
 
 export class ProductionReportFilterDto {
   @ApiProperty({
@@ -28,4 +33,14 @@ export class ProductionReportFilterDto {
   @ApiProperty({ required: false, description: 'Items per page (default: 10)' })
   @IsOptional()
   pageSize?: number;
+
+  @ApiProperty({
+    required: false,
+    enum: MainCategoryType,
+    description:
+      'Filter by main category type: SUB (sub-categories) or BARANG_BAKU (raw materials with canBeProduced=true)',
+  })
+  @IsOptional()
+  @IsEnum(MainCategoryType)
+  mainCategoryType?: MainCategoryType;
 }
