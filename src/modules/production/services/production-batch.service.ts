@@ -863,10 +863,25 @@ export class ProductionBatchService extends BaseResponse {
 
       const queryBuilder = this.batchRepository
         .createQueryBuilder('batch')
-        .leftJoinAndSelect('batch.formula', 'formula')
-        .leftJoinAndSelect('batch.productCode', 'productCode')
-        .leftJoinAndSelect('productCode.product', 'product')
-        .leftJoinAndSelect('batch.stages', 'stages')
+        // Optimasi: Hanya select kolom yang dibutuhkan untuk list view
+        .select([
+          'batch.id',
+          'batch.batchNumber',
+          'batch.productionDate',
+          'batch.plannedQuantity',
+          'batch.actualQuantity',
+          'batch.status',
+          'batch.startedAt',
+          'batch.completedAt',
+          'batch.createdAt', // Fix: Required for orderBy pagination
+          // 'batch.qcStatus', // Uncomment if needed in list
+        ])
+        .leftJoin('batch.formula', 'formula')
+        .addSelect(['formula.id', 'formula.formulaName'])
+        .leftJoin('batch.product', 'product')
+        .addSelect(['product.name', 'product.productType']) // Added productType per column usage
+        .leftJoin('product.category', 'category')
+        .addSelect(['category.name'])
         .orderBy('batch.productionDate', 'DESC')
         .addOrderBy('batch.createdAt', 'DESC');
 
@@ -992,7 +1007,9 @@ export class ProductionBatchService extends BaseResponse {
           'materialUsages',
           'materialUsages.materialProductCode',
           'materialUsages.materialProductCode.product',
+          'materialUsages.materialProductCode.product.category',
           'materialUsages.materialProductCode.category',
+          'materialUsages.materialProductCode.size',
           'bottlingOutputs',
           'bottlingOutputs.productCode',
           'bottlingOutputs.productCode.size',

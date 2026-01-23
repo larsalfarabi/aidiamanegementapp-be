@@ -47,8 +47,16 @@ export class ProductsService extends BaseResponse {
 
   // * --- PRODUCT CODES --- */
   async findAll(query: ProductCodeQueryDto): Promise<ResponsePagination> {
-    const { pageSize, limit, page, mainCategory, subCategoryId, size, search } =
-      query;
+    const {
+      pageSize,
+      limit,
+      page,
+      mainCategory,
+      subCategoryId,
+      size,
+      search,
+      canBeMaterial,
+    } = query;
 
     // Cache Strategy
     const cacheKey = `products:codes:list:${JSON.stringify(query)}`;
@@ -77,6 +85,7 @@ export class ProductsService extends BaseResponse {
         'products.id',
         'products.name',
         'products.productType',
+        'products.canBeProduced',
         'mainCategory.id',
         'mainCategory.name',
         'subCategory.id',
@@ -105,6 +114,19 @@ export class ProductsService extends BaseResponse {
     if (size) {
       queryBuilder.andWhere('productSizes.id = :size', {
         size: size,
+      });
+    }
+
+    if (canBeMaterial !== undefined) {
+      queryBuilder.andWhere('pc.canBeMaterial = :canBeMaterial', {
+        canBeMaterial,
+      });
+    }
+
+    // ✅ NEW: Filter by products.canBeProduced
+    if (query.canBeProduced !== undefined) {
+      queryBuilder.andWhere('products.canBeProduced = :canBeProduced', {
+        canBeProduced: query.canBeProduced,
       });
     }
 
@@ -141,6 +163,7 @@ export class ProductsService extends BaseResponse {
         'pc.id',
         'pc.productCode',
         'pc.isActive',
+        'pc.canBeMaterial',
         'pc.createdAt',
         'pc.updatedAt',
         'products.id',
@@ -148,6 +171,7 @@ export class ProductsService extends BaseResponse {
         'products.productType',
         'products.imageUrl',
         'products.isActive',
+        'products.canBeProduced',
         'mainCategory.id', // ✅ Main category dari ProductCodes table
         'mainCategory.name',
         'mainCategory.description',
@@ -305,12 +329,36 @@ export class ProductsService extends BaseResponse {
       updateData.isActive = payload.isActive;
     }
 
+    if (payload.canBeMaterial !== undefined) {
+      updateData.canBeMaterial = payload.canBeMaterial;
+    }
+
     if (payload.updatedBy !== undefined) {
       updateData.updatedBy = payload.updatedBy;
     }
 
     // Step 4: Perform the update
     await this.productCodeRepo.update(id, updateData);
+
+    // ✅ NEW: Handle canBeProduced update on the related Product entity
+    if (payload.canBeProduced !== undefined) {
+      if (!existingProductCode.product) {
+        // Should not happen given relations load, but safe check
+        const productCodeWithProduct = await this.productCodeRepo.findOne({
+          where: { id },
+          relations: ['product'],
+        });
+        if (productCodeWithProduct?.product?.id) {
+          await this.productRepo.update(productCodeWithProduct.product.id, {
+            canBeProduced: payload.canBeProduced,
+          });
+        }
+      } else {
+        await this.productRepo.update(existingProductCode.product.id, {
+          canBeProduced: payload.canBeProduced,
+        });
+      }
+    }
 
     // Step 5: Fetch updated data for response
     const updatedProductCode = await this.productCodeRepo.findOne({
@@ -521,6 +569,13 @@ export class ProductsService extends BaseResponse {
       });
     }
 
+    // ✅ NEW: Filter by canBeProduced
+    if (query.canBeProduced !== undefined) {
+      queryBuilder.andWhere('p.canBeProduced = :canBeProduced', {
+        canBeProduced: query.canBeProduced,
+      });
+    }
+
     const [result, count] = await queryBuilder.getManyAndCount();
 
     return this._pagination(
@@ -629,11 +684,15 @@ export class ProductsService extends BaseResponse {
     }
 
     // ✅ Create new product with the determined category ID
+    // Default canBeProduced = true for "BARANG JADI", false for others
+    const canBeProduced = mainCategoryName === 'BARANG JADI';
+
     const newProduct = await this.productRepo.save({
       name: payload.name,
       productType: payload.productType ?? null,
       category: { id: categoryIdForProduct },
       isActive: true,
+      canBeProduced: canBeProduced, // ✅ Set default based on category
       createdBy: payload.createdBy,
     });
 

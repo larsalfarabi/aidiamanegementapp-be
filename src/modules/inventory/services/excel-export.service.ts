@@ -48,6 +48,7 @@ export class ExcelExportService {
       endDate,
       mainCategory: mainCategory || 'Barang Jadi',
       page: 1,
+      limit: 0,
       pageSize: 10000, // Get all data for export
     };
 
@@ -224,6 +225,7 @@ export class ExcelExportService {
       endDate,
       mainCategory: mainCategory || 'Barang Baku', // Default to Barang Baku
       page: 1,
+      limit: 0,
       pageSize: 10000,
     };
 
@@ -400,6 +402,7 @@ export class ExcelExportService {
         ? 'Barang Jadi'
         : mainCategory || 'Barang Baku',
       page: 1,
+      limit: 0,
       pageSize: 10000,
     };
 

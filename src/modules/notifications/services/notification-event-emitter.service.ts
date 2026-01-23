@@ -30,6 +30,8 @@ export enum NotificationEventType {
   ADJUSTMENT = 'ADJUSTMENT', // HIGH
   STOCK_MISMATCH = 'STOCK_MISMATCH', // CRITICAL
 
+  PRODUCTION_IN = 'PRODUCTION_IN', // MEDIUM
+
   // === PRODUCTION MODULE (16 events) ===
 
   // Production Batch (11 events)
@@ -265,6 +267,31 @@ export class NotificationEventEmitter {
       resourceId: data.productCodeId,
       actionUrl: `/inventory/finished-goods`,
       actionLabel: 'Stock Opname Segera',
+      metadata: data,
+    });
+  }
+
+  /**
+   * Emit PRODUCTION_IN notification (MEDIUM)
+   */
+  async emitProductionIn(data: {
+    transactionId: number;
+    productCode: string;
+    productName: string;
+    quantity: number;
+    batchNumber: string;
+  }) {
+    await this.notificationsService.create({
+      title: 'Produksi Masuk',
+      message: `${data.productName}: Masuk ${data.quantity} unit (Batch: ${data.batchNumber})`,
+      category: NotificationCategory.INVENTORY,
+      priority: NotificationPriority.MEDIUM,
+      requiredPermission: 'inventory:view',
+      eventType: NotificationEventType.PRODUCTION_IN,
+      resourceType: NotificationResourceType.INVENTORY,
+      resourceId: data.transactionId,
+      actionUrl: `/inventory/finished-goods`,
+      actionLabel: 'Lihat Stok',
       metadata: data,
     });
   }

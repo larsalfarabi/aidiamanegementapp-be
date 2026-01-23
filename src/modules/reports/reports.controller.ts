@@ -6,6 +6,7 @@ import {
   Res,
   StreamableFile,
   Header,
+  Param,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -22,6 +23,7 @@ import {
 import {
   CustomerSalesReportQueryDto,
   CustomerSalesReportResponseDto,
+  InvoiceDetailDto,
 } from './dto/customer-sales-report.dto';
 import {
   CustomerSalesExportQueryDto,
@@ -32,6 +34,7 @@ import { JwtGuard } from '../auth/guards/auth.guard';
 import { PermissionGuard } from '../auth/guards/permission.guard';
 import { RequirePermissions } from '../../common/decorator/permission.decorator';
 import { Resource, Action } from '../../common/enums/resource.enum';
+import { Pagination } from 'src/common/decorator/pagination.decorator';
 
 @ApiTags('reports')
 @ApiBearerAuth()
@@ -63,7 +66,7 @@ export class ReportsController {
     description: 'Bad Request - Invalid query parameters',
   })
   async getProductSalesReport(
-    @Query() query: ProductSalesReportQueryDto,
+    @Pagination() query: ProductSalesReportQueryDto,
   ): Promise<ProductSalesReportResponseDto> {
     return this.reportsService.getProductSalesReport(query);
   }
@@ -91,9 +94,23 @@ export class ReportsController {
     description: 'Bad Request - Invalid query parameters',
   })
   async getCustomerSalesReport(
-    @Query() query: CustomerSalesReportQueryDto,
+    @Pagination() query: CustomerSalesReportQueryDto,
   ): Promise<CustomerSalesReportResponseDto> {
     return this.reportsService.getCustomerSalesReport(query);
+  }
+
+  @RequirePermissions(`${Resource.REPORT}:${Action.VIEW}`)
+  @Get('sales/customers/:customerId/details')
+  @ApiOperation({
+    summary: 'Get Customer Invoice Details (Lazy Load)',
+    description:
+      'Retrieve specific invoices for a customer directly from DB (Lazy Loading).',
+  })
+  async getCustomerDetails(
+    @Param('customerId') customerId: number,
+    @Pagination() query: CustomerSalesReportQueryDto,
+  ): Promise<InvoiceDetailDto[]> {
+    return this.reportsService.getCustomerInvoices(customerId, query);
   }
 
   @RequirePermissions(`${Resource.REPORT}:${Action.EXPORT}`)
@@ -124,7 +141,7 @@ export class ReportsController {
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   )
   async exportCustomerSalesReport(
-    @Query() query: CustomerSalesExportQueryDto,
+    @Pagination() query: CustomerSalesExportQueryDto,
     @Res({ passthrough: true }) res: Response,
   ): Promise<StreamableFile> {
     // Generate Excel file

@@ -72,19 +72,20 @@ export class TransactionReportService extends BaseResponse {
   async getFinishedGoodsReport(
     filters: TransactionReportFiltersDto,
   ): Promise<ResponsePagination> {
-    const {
-      startDate,
-      endDate,
-      productCodeId,
-      page = 1,
-      pageSize = 50,
-    } = filters;
+    let { startDate, endDate, productCodeId, page, pageSize } = filters;
 
-    // Default date range: last 7 days if not specified
-    const defaultEndDate = new Date().toISOString().split('T')[0];
-    const defaultStartDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-      .toISOString()
-      .split('T')[0];
+    // Fallback pagination logic (ensure limit is calculated)
+    page = page ? Number(page) : 1;
+    pageSize = pageSize ? Number(pageSize) : 50;
+    const offset = (page - 1) * pageSize;
+
+    console.log('DEBUG FILTER FG:', { page, pageSize, offset, filters });
+
+    // Default date range: This Month (1st to Today)
+    const today = new Date();
+    const defaultEndDate = today.toISOString().split('T')[0];
+    const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+    const defaultStartDate = firstDay.toISOString().split('T')[0];
 
     const finalStartDate = startDate || defaultStartDate;
     const finalEndDate = endDate || defaultEndDate;
@@ -110,8 +111,8 @@ export class TransactionReportService extends BaseResponse {
       .leftJoin('pc.category', 'cat')
       .leftJoin('pc.size', 'size')
       .select([
-        'pc.id',
-        'pc.productCode',
+        'pc.id AS id',
+        'pc.productCode AS productCode',
         'p.name AS productName',
         'size.sizeValue AS sizeValue',
       ])
@@ -131,86 +132,123 @@ export class TransactionReportService extends BaseResponse {
     // Order and pagination for data query
     productQuery = productQuery
       .orderBy('pc.productCode', 'ASC')
-      .skip((page - 1) * pageSize)
-      .take(pageSize);
+      .offset(offset)
+      .limit(pageSize);
 
     const products = await productQuery.getRawMany();
 
-    // For each product, get stokAwal, transactions, and stokAkhir
-    const reportRows: TransactionReportRow[] = await Promise.all(
-      products.map(async (pc) => {
-        // 1. Get Stok Awal from startDate
-        const startAlias = useStartSnapshot ? 'start_snap' : 'start_daily';
-        const stokAwalData = await startRepo
-          .createQueryBuilder(startAlias)
-          .select(`${startAlias}.stokAwal`, 'stokAwal')
-          .where(`${startAlias}.productCodeId = :pcId`, { pcId: pc.pc_id })
-          .andWhere(`${startAlias}.${startDateField} = :startDate`, {
-            startDate: finalStartDate,
-          })
-          .getRawOne();
+    if (products.length === 0) {
+      return this._pagination(
+        'Finished goods report retrieved successfully',
+        [],
+        total,
+        page,
+        pageSize,
+      );
+    }
 
-        // 2. Get Stok Akhir from endDate
-        const endAlias = useEndSnapshot ? 'end_snap' : 'end_daily';
-        const stokAkhirData = await endRepo
-          .createQueryBuilder(endAlias)
-          .select(`${endAlias}.stokAkhir`, 'stokAkhir')
-          .where(`${endAlias}.productCodeId = :pcId`, { pcId: pc.pc_id })
-          .andWhere(`${endAlias}.${endDateField} = :endDate`, {
-            endDate: finalEndDate,
-          })
-          .getRawOne();
+    const productIds = products.map((p) => p.id);
 
-        // 3. Aggregate transactions between startDate and endDate
-        const transactions = await this.transactionsRepo
-          .createQueryBuilder('trx')
-          .select('trx.transactionType', 'type')
-          .addSelect('SUM(ABS(trx.quantity))', 'total')
-          .where('trx.productCodeId = :pcId', { pcId: pc.pc_id })
-          .andWhere('trx.businessDate >= :startDate', {
-            startDate: finalStartDate,
-          })
-          .andWhere('trx.businessDate <= :endDate', { endDate: finalEndDate })
-          .andWhere('trx.status = :status', { status: 'COMPLETED' })
-          .groupBy('trx.transactionType')
-          .getRawMany();
+    // BATCH 1: Get Stok Awal
+    const startAlias = useStartSnapshot ? 'start_snap' : 'start_daily';
+    const stokAwalResults = await startRepo
+      .createQueryBuilder(startAlias)
+      .select(`${startAlias}.productCodeId`, 'productCodeId')
+      .addSelect(`${startAlias}.stokAwal`, 'stokAwal')
+      .where(`${startAlias}.productCodeId IN (:...ids)`, { ids: productIds })
+      .andWhere(`${startAlias}.${startDateField} = :startDate`, {
+        startDate: finalStartDate,
+      })
+      .getRawMany();
 
-        // Map transaction types to columns
-        const barangMasuk = transactions
-          .filter((t) =>
-            ['PRODUCTION_IN', 'REPACK_IN', 'SAMPLE_RETURN'].includes(t.type),
-          )
-          .reduce((sum, t) => sum + Number(t.total), 0);
-
-        const dipesan = transactions
-          .filter((t) => t.type === 'SALE')
-          .reduce((sum, t) => sum + Number(t.total), 0);
-
-        const barangOutRepack = transactions
-          .filter((t) => t.type === 'REPACK_OUT')
-          .reduce((sum, t) => sum + Number(t.total), 0);
-
-        const barangOutSample = transactions
-          .filter((t) => t.type === 'SAMPLE_OUT')
-          .reduce((sum, t) => sum + Number(t.total), 0);
-
-        return {
-          productCodeId: pc.pc_id,
-          productCode: pc.pc_productCode,
-          productName: `${pc.productName} @ ${pc.sizeValue || ''}`,
-          stokAwal: Number(stokAwalData?.stokAwal) || 0,
-          barangMasuk,
-          dipesan,
-          barangOutRepack,
-          barangOutSample,
-          barangOutProduksi: 0, // Not used for finished goods
-          stokAkhir: Number(stokAkhirData?.stokAkhir) || 0,
-          soFisik: null, // Manual entry
-          selisih: null, // Calculated after SO Fisik entry
-          keterangan: '', // Transaction-based report, no single note
-        };
-      }),
+    const stokAwalMap = new Map(
+      stokAwalResults.map((item) => [
+        item.productCodeId,
+        Number(item.stokAwal || 0),
+      ]),
     );
+
+    // BATCH 2: Get Stok Akhir
+    const endAlias = useEndSnapshot ? 'end_snap' : 'end_daily';
+    const stokAkhirResults = await endRepo
+      .createQueryBuilder(endAlias)
+      .select(`${endAlias}.productCodeId`, 'productCodeId')
+      .addSelect(`${endAlias}.stokAkhir`, 'stokAkhir')
+      .where(`${endAlias}.productCodeId IN (:...ids)`, { ids: productIds })
+      .andWhere(`${endAlias}.${endDateField} = :endDate`, {
+        endDate: finalEndDate,
+      })
+      .getRawMany();
+
+    const stokAkhirMap = new Map(
+      stokAkhirResults.map((item) => [
+        item.productCodeId,
+        Number(item.stokAkhir || 0),
+      ]),
+    );
+
+    // BATCH 3: Get Transactions
+    const transactions = await this.transactionsRepo
+      .createQueryBuilder('trx')
+      .select('trx.productCodeId', 'productCodeId')
+      .addSelect('trx.transactionType', 'type')
+      .addSelect('SUM(ABS(trx.quantity))', 'total')
+      .where('trx.productCodeId IN (:...ids)', { ids: productIds })
+      .andWhere('trx.businessDate >= :startDate', {
+        startDate: finalStartDate,
+      })
+      .andWhere('trx.businessDate <= :endDate', { endDate: finalEndDate })
+      .andWhere('trx.status = :status', { status: 'COMPLETED' })
+      .groupBy('trx.productCodeId')
+      .addGroupBy('trx.transactionType')
+      .getRawMany();
+
+    // Process transactions into a map for easy lookup
+    // Map<productCodeId, { type: total }>
+    const transactionMap = new Map<number, Record<string, number>>();
+
+    transactions.forEach((t) => {
+      const pId = t.productCodeId;
+      if (!transactionMap.has(pId)) {
+        transactionMap.set(pId, {});
+      }
+      const pTrans = transactionMap.get(pId)!;
+      pTrans[t.type] = Number(t.total || 0);
+    });
+
+    // Combine all data
+    const reportRows: TransactionReportRow[] = products.map((pc) => {
+      const pId = pc.id;
+      const stokAwal = stokAwalMap.get(pId) || 0;
+      const stokAkhir = stokAkhirMap.get(pId) || 0;
+      const trans = transactionMap.get(pId) || {};
+
+      // Map transaction types to columns
+      const barangMasuk =
+        (trans['PRODUCTION_IN'] || 0) +
+        (trans['REPACK_IN'] || 0) +
+        (trans['SAMPLE_RETURN'] || 0);
+
+      const dipesan = trans['SALE'] || 0;
+      const barangOutRepack = trans['REPACK_OUT'] || 0;
+      const barangOutSample = trans['SAMPLE_OUT'] || 0;
+
+      return {
+        productCodeId: pc.id,
+        productCode: pc.productCode,
+        productName: `${pc.productName} @ ${pc.sizeValue || ''}`,
+        stokAwal,
+        barangMasuk,
+        dipesan,
+        barangOutRepack,
+        barangOutSample,
+        barangOutProduksi: 0, // Not used for finished goods
+        stokAkhir,
+        soFisik: null,
+        selisih: null,
+        keterangan: '',
+      };
+    });
 
     return this._pagination(
       'Finished goods report retrieved successfully',
@@ -235,20 +273,21 @@ export class TransactionReportService extends BaseResponse {
   async getMaterialsReport(
     filters: TransactionReportFiltersDto,
   ): Promise<ResponsePagination> {
-    const {
-      startDate,
-      endDate,
-      mainCategory,
-      productCodeId,
-      page = 1,
-      pageSize = 50,
-    } = filters;
+    let { startDate, endDate, mainCategory, productCodeId, page, pageSize } =
+      filters;
 
-    // Default date range: last 7 days
-    const defaultEndDate = new Date().toISOString().split('T')[0];
-    const defaultStartDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-      .toISOString()
-      .split('T')[0];
+    // Fallback pagination logic (ensure limit is calculated)
+    page = page ? Number(page) : 1;
+    pageSize = pageSize ? Number(pageSize) : 50;
+    const offset = (page - 1) * pageSize;
+
+    console.log('DEBUG FILTER MTR:', { page, pageSize, offset, filters });
+
+    // Default date range: This Month (1st to Today)
+    const today = new Date();
+    const defaultEndDate = today.toISOString().split('T')[0];
+    const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+    const defaultStartDate = firstDay.toISOString().split('T')[0];
 
     const finalStartDate = startDate || defaultStartDate;
     const finalEndDate = endDate || defaultEndDate;
@@ -273,8 +312,8 @@ export class TransactionReportService extends BaseResponse {
       .leftJoin('pc.category', 'cat')
       .leftJoin('pc.size', 'size')
       .select([
-        'pc.id',
-        'pc.productCode',
+        'pc.id AS id',
+        'pc.productCode AS productCode',
         'p.name AS productName',
         'size.unitOfMeasure AS unitOfMeasure',
       ])
@@ -304,77 +343,118 @@ export class TransactionReportService extends BaseResponse {
     // Order and pagination for data query
     productQuery = productQuery
       .orderBy('pc.productCode', 'ASC')
-      .skip((page - 1) * pageSize)
-      .take(pageSize);
+      .offset(offset)
+      .limit(pageSize);
 
     const products = await productQuery.getRawMany();
 
-    // For each product, get stokAwal, transactions, and stokAkhir
-    const reportRows: TransactionReportRow[] = await Promise.all(
-      products.map(async (pc) => {
-        // 1. Get Stok Awal from startDate
-        const startAlias = useStartSnapshot ? 'start_snap' : 'start_daily';
-        const stokAwalData = await startRepo
-          .createQueryBuilder(startAlias)
-          .select(`${startAlias}.stokAwal`, 'stokAwal')
-          .where(`${startAlias}.productCodeId = :pcId`, { pcId: pc.pc_id })
-          .andWhere(`${startAlias}.${startDateField} = :startDate`, {
-            startDate: finalStartDate,
-          })
-          .getRawOne();
+    if (products.length === 0) {
+      return this._pagination(
+        'Materials report retrieved successfully',
+        [],
+        total,
+        page,
+        pageSize,
+      );
+    }
 
-        // 2. Get Stok Akhir from endDate
-        const endAlias = useEndSnapshot ? 'end_snap' : 'end_daily';
-        const stokAkhirData = await endRepo
-          .createQueryBuilder(endAlias)
-          .select(`${endAlias}.stokAkhir`, 'stokAkhir')
-          .where(`${endAlias}.productCodeId = :pcId`, { pcId: pc.pc_id })
-          .andWhere(`${endAlias}.${endDateField} = :endDate`, {
-            endDate: finalEndDate,
-          })
-          .getRawOne();
+    const productIds = products.map((p) => p.id);
 
-        // 3. Aggregate transactions between startDate and endDate
-        const transactions = await this.transactionsRepo
-          .createQueryBuilder('trx')
-          .select('trx.transactionType', 'type')
-          .addSelect('SUM(ABS(trx.quantity))', 'total')
-          .where('trx.productCodeId = :pcId', { pcId: pc.pc_id })
-          .andWhere('trx.businessDate >= :startDate', {
-            startDate: finalStartDate,
-          })
-          .andWhere('trx.businessDate <= :endDate', { endDate: finalEndDate })
-          .andWhere('trx.status = :status', { status: 'COMPLETED' })
-          .groupBy('trx.transactionType')
-          .getRawMany();
+    // BATCH 1: Get Stok Awal
+    const startAlias = useStartSnapshot ? 'start_snap' : 'start_daily';
+    const stokAwalResults = await startRepo
+      .createQueryBuilder(startAlias)
+      .select(`${startAlias}.productCodeId`, 'productCodeId')
+      .addSelect(`${startAlias}.stokAwal`, 'stokAwal')
+      .where(`${startAlias}.productCodeId IN (:...ids)`, { ids: productIds })
+      .andWhere(`${startAlias}.${startDateField} = :startDate`, {
+        startDate: finalStartDate,
+      })
+      .getRawMany();
 
-        // Map transaction types to columns
-        const barangMasuk = transactions
-          .filter((t) => t.type === 'PURCHASE')
-          .reduce((sum, t) => sum + Number(t.total), 0);
-
-        const barangOutProduksi = transactions
-          .filter((t) => t.type === 'PRODUCTION_MATERIAL_OUT')
-          .reduce((sum, t) => sum + Number(t.total), 0);
-
-        return {
-          productCodeId: pc.pc_id,
-          productCode: pc.pc_productCode,
-          productName: pc.productName,
-          unit: pc.unitOfMeasure || '',
-          stokAwal: Number(stokAwalData?.stokAwal) || 0,
-          barangMasuk, // Purchase
-          dipesan: 0, // Not used for materials
-          barangOutRepack: 0, // Not used for materials
-          barangOutSample: 0, // Not used for materials
-          barangOutProduksi, // Out Prod
-          stokAkhir: Number(stokAkhirData?.stokAkhir) || 0,
-          soFisik: null, // Manual entry
-          selisih: null, // Calculated after SO Fisik entry
-          keterangan: '', // Transaction-based report
-        };
-      }),
+    const stokAwalMap = new Map(
+      stokAwalResults.map((item) => [
+        item.productCodeId,
+        Number(item.stokAwal || 0),
+      ]),
     );
+
+    // BATCH 2: Get Stok Akhir
+    const endAlias = useEndSnapshot ? 'end_snap' : 'end_daily';
+    const stokAkhirResults = await endRepo
+      .createQueryBuilder(endAlias)
+      .select(`${endAlias}.productCodeId`, 'productCodeId')
+      .addSelect(`${endAlias}.stokAkhir`, 'stokAkhir')
+      .where(`${endAlias}.productCodeId IN (:...ids)`, { ids: productIds })
+      .andWhere(`${endAlias}.${endDateField} = :endDate`, {
+        endDate: finalEndDate,
+      })
+      .getRawMany();
+
+    const stokAkhirMap = new Map(
+      stokAkhirResults.map((item) => [
+        item.productCodeId,
+        Number(item.stokAkhir || 0),
+      ]),
+    );
+
+    // BATCH 3: Get Transactions
+    const transactions = await this.transactionsRepo
+      .createQueryBuilder('trx')
+      .select('trx.productCodeId', 'productCodeId')
+      .addSelect('trx.transactionType', 'type')
+      .addSelect('SUM(ABS(trx.quantity))', 'total')
+      .where('trx.productCodeId IN (:...ids)', { ids: productIds })
+      .andWhere('trx.businessDate >= :startDate', {
+        startDate: finalStartDate,
+      })
+      .andWhere('trx.businessDate <= :endDate', { endDate: finalEndDate })
+      .andWhere('trx.status = :status', { status: 'COMPLETED' })
+      .groupBy('trx.productCodeId')
+      .addGroupBy('trx.transactionType')
+      .getRawMany();
+
+    // Process transactions into a map for easy lookup
+    const transactionMap = new Map<number, Record<string, number>>();
+
+    transactions.forEach((t) => {
+      const pId = t.productCodeId;
+      if (!transactionMap.has(pId)) {
+        transactionMap.set(pId, {});
+      }
+      const pTrans = transactionMap.get(pId)!;
+      pTrans[t.type] = Number(t.total || 0);
+    });
+
+    // Combine all data
+    const reportRows: TransactionReportRow[] = products.map((pc) => {
+      const pId = pc.id;
+      const stokAwal = stokAwalMap.get(pId) || 0;
+      const stokAkhir = stokAkhirMap.get(pId) || 0;
+      const trans = transactionMap.get(pId) || {};
+
+      // Map transaction types to columns
+      const barangMasuk =
+        (trans['PURCHASE'] || 0) + (trans['PRODUCTION_IN'] || 0);
+      const barangOutProduksi = trans['PRODUCTION_MATERIAL_OUT'] || 0;
+
+      return {
+        productCodeId: pc.id,
+        productCode: pc.productCode,
+        productName: pc.productName,
+        unit: pc.unitOfMeasure || '',
+        stokAwal,
+        barangMasuk,
+        dipesan: 0,
+        barangOutRepack: 0,
+        barangOutSample: 0,
+        barangOutProduksi,
+        stokAkhir,
+        soFisik: null,
+        selisih: null,
+        keterangan: '',
+      };
+    });
 
     return this._pagination(
       'Materials report retrieved successfully',

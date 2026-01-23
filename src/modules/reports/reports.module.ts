@@ -9,9 +9,13 @@ import { Users } from '../users/entities/users.entity';
 import { RedisModule } from '../redis/redis.module';
 import { ProductionReportsController } from './production/production-reports.controller';
 import { ProductionReportsService } from './production/production-reports.service';
-import { ProductionMaterialUsage, ProductionBatches } from '../production/entities';
+import {
+  ProductionMaterialUsage,
+  ProductionBatches,
+} from '../production/entities';
 import { ProductCategories } from '../products/entity/product_categories.entity';
 import { Products } from '../products/entity/products.entity';
+import { ProductCodes } from '../products/entity/product_codes.entity';
 import { ProductionFormulas, FormulaMaterials } from '../production/entities';
 
 @Module({
@@ -23,6 +27,7 @@ import { ProductionFormulas, FormulaMaterials } from '../production/entities';
       ProductionMaterialUsage,
       ProductCategories,
       Products,
+      ProductCodes,
       ProductionFormulas,
       FormulaMaterials,
       ProductionBatches,

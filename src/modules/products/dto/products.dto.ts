@@ -38,6 +38,7 @@ export class ProductDto {
   imageUrl?: string;
 
   @IsOptional()
+  @IsOptional()
   @IsBoolean()
   @Transform(({ value }) => {
     if (value === 'true' || value === true) return true;
@@ -45,6 +46,16 @@ export class ProductDto {
     return value;
   })
   isActive?: boolean = true;
+
+  // ✅ NEW: Flag untuk menandai barang yang bisa diproduksi
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => {
+    if (value === 'true' || value === true) return true;
+    if (value === 'false' || value === false) return false;
+    return value;
+  })
+  canBeProduced?: boolean = false;
 
   @IsOptional()
   createdBy?: { id: number };
@@ -65,6 +76,15 @@ export class QueryProductDto extends PaginationDto {
   @IsOptional()
   @IsString()
   subCategory?: string; // Filter by sub-category (Buffet, Premium, Freshly)
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => {
+    if (value === 'true' || value === true) return true;
+    if (value === 'false' || value === false) return false;
+    return value;
+  })
+  canBeProduced?: boolean;
 }
 
 // DTO for checking/creating product item (find or create pattern)
@@ -202,6 +222,15 @@ export class ProductCodeDto {
 
   @IsOptional()
   @IsBoolean()
+  @Transform(({ value }) => {
+    if (value === 'true' || value === true) return true;
+    if (value === 'false' || value === false) return false;
+    return value;
+  })
+  canBeMaterial?: boolean = false;
+
+  @IsOptional()
+  @IsBoolean()
   isDeleted?: boolean;
 
   // Will be injected by @InjectCreatedBy decorator
@@ -221,7 +250,16 @@ export class CreateProductCodeDto extends OmitType(ProductCodeDto, [
   'deletedBy',
 ]) {}
 
-export class UpdateProductCodeDto extends PartialType(ProductCodeDto) {}
+export class UpdateProductCodeDto extends PartialType(ProductCodeDto) {
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => {
+    if (value === 'true' || value === true) return true;
+    if (value === 'false' || value === false) return false;
+    return value;
+  })
+  canBeProduced?: boolean;
+}
 
 export class DeleteProductCodeDto extends PickType(ProductCodeDto, [
   'deletedBy',
@@ -267,6 +305,24 @@ export class ProductCodeQueryDto extends ProductQueryDto {
   @IsPositive()
   @Type(() => Number)
   size?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => {
+    if (value === 'true' || value === true) return true;
+    if (value === 'false' || value === false) return false;
+    return value;
+  })
+  canBeMaterial?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => {
+    if (value === 'true' || value === true) return true;
+    if (value === 'false' || value === false) return false;
+    return value;
+  })
+  canBeProduced?: boolean;
 }
 
 // Query DTO for Product Sizes with category filter

@@ -43,6 +43,7 @@ import {
   BatchStockOpnameSaveDto,
   StockOpnameFiltersDto,
 } from './dto/transaction-report.dto';
+import { Pagination } from 'src/common/decorator/pagination.decorator';
 
 interface AuthRequest extends Request {
   user: { id: number; name?: string };
@@ -588,7 +589,9 @@ export class InventoryController {
    */
   @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
   @Get('reports/finished-goods')
-  async getFinishedGoodsReport(@Query() filters: TransactionReportFiltersDto) {
+  async getFinishedGoodsReport(
+    @Pagination() filters: TransactionReportFiltersDto,
+  ) {
     return this.reportService.getFinishedGoodsReport(filters);
   }
 
@@ -607,7 +610,7 @@ export class InventoryController {
    */
   @RequirePermissions(`${Resource.INVENTORY}:${Action.VIEW}`)
   @Get('reports/materials')
-  async getMaterialsReport(@Query() filters: TransactionReportFiltersDto) {
+  async getMaterialsReport(@Pagination() filters: TransactionReportFiltersDto) {
     return this.reportService.getMaterialsReport(filters);
   }
 

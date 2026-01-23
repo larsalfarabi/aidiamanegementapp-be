@@ -8,12 +8,13 @@ import {
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { PaginationDto } from 'src/common/dto/pagination.dto';
 
 // ============================================================================
 // QUERY DTO
 // ============================================================================
 
-export class CustomerSalesReportQueryDto {
+export class CustomerSalesReportQueryDto extends PaginationDto {
   @ApiPropertyOptional({
     description: 'Start date (inclusive)',
     example: '2025-10-01',
@@ -40,40 +41,6 @@ export class CustomerSalesReportQueryDto {
   @IsOptional()
   @IsString()
   customerType?: string;
-
-  @ApiPropertyOptional({
-    description: 'Search by customer name',
-    example: 'Santika',
-  })
-  @IsOptional()
-  @IsString()
-  search?: string;
-
-  @ApiPropertyOptional({
-    description: 'Page number (1-based)',
-    default: 1,
-    minimum: 1,
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  page?: number = 1;
-
-  @ApiPropertyOptional({
-    description: 'Items per page',
-    default: 10,
-    minimum: 1,
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  pageSize?: number = 10;
-
-  // Computed property for SQL offset
-  @Transform(({ obj }) => ((obj.page || 1) - 1) * (obj.pageSize || 10))
-  limit?: number;
 }
 
 // ============================================================================
