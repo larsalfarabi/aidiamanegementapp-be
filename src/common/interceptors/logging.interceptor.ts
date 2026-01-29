@@ -13,6 +13,10 @@ export class LoggingInterceptor implements NestInterceptor {
   private readonly logger = new Logger(LoggingInterceptor.name);
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    if ((context.getType() as string) === 'graphql') {
+      return next.handle();
+    }
+
     const request = context.switchToHttp().getRequest();
     const userAgent = request.headers['user-agent'] || '';
     const { ip, method, url } = request;
