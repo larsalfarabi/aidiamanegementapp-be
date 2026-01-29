@@ -3,9 +3,11 @@ import { AppModule } from './app.module';
 import * as dotenv from 'dotenv';
 import * as compression from 'compression';
 import helmet from 'helmet';
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { ValidationPipe } from '@nestjs/common';
 import { useContainer } from 'class-validator';
 import * as os from 'os';
+import { WinstonModule } from 'nest-winston';
+import { loggerConfig } from './config/logger.config';
 dotenv.config();
 
 // Function to get network IP address
@@ -29,7 +31,9 @@ function getNetworkIP(): string {
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    logger: WinstonModule.createLogger(loggerConfig),
+  });
   // Note: Body parser is enabled by default in NestJS
   // Better Auth will handle its own request parsing when needed
 
@@ -81,9 +85,7 @@ async function bootstrap() {
   const networkIP = getNetworkIP();
 
   await app.listen(port, '0.0.0.0');
-  Logger.debug(
-    `Server berjalan di http://${networkIP}:${process.env.APP_PORT}`,
-    'Bootstrap',
-  );
+  // Logger is now Winston, so standard console.log or Logger.log works through it
+  console.log(`Server berjalan di http://${networkIP}:${process.env.APP_PORT}`);
 }
 bootstrap();
