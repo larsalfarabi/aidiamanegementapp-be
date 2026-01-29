@@ -15,6 +15,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
   constructor(private readonly httpAdapterHost: HttpAdapterHost) {}
 
   catch(exception: unknown, host: ArgumentsHost): void {
+    if ((host.getType() as string) === 'graphql') {
+      // Let GraphQL filters handle this
+      return;
+    }
+
     const { httpAdapter } = this.httpAdapterHost;
     const ctx = host.switchToHttp();
 
