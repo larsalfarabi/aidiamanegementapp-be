@@ -27,8 +27,9 @@ export class OrderDto {
   @IsDate()
   invoiceDate?: Date;
 
+  @IsOptional()
   @IsString()
-  customerNotes: string;
+  customerNotes?: string;
 
   @IsArray()
   @ValidateNested({ each: true })
@@ -40,8 +41,9 @@ export class OrderDto {
   @Min(0)
   paidAmount?: number;
 
+  @IsOptional()
   @IsString()
-  paymentInfo: string;
+  paymentInfo?: string;
 
   @IsOptional()
   @IsString()
