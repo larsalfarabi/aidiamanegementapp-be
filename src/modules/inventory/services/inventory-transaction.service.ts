@@ -4,6 +4,7 @@ import {
   BadRequestException,
   Logger,
 } from '@nestjs/common';
+import { getJakartaDateString } from '../../../common/utils/date.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   Repository,
@@ -2144,6 +2145,424 @@ export class InventoryTransactionService extends BaseResponse {
       throw error;
     } finally {
       await queryRunner.release();
+    }
+  }
+
+  /**
+   * Record sale with backdate support and propagation
+   * Updates: daily_inventory.dipesan++ at invoice date
+   * Propagates: stokAwal adjustment to all future days
+   *
+   * @param dto Sale data including productCodeId, quantity, invoiceDate
+   * @param userId User performing the action
+   * @param externalManager Optional external EntityManager for transaction coordination
+   * @returns Response with daily inventory and transaction details, including propagation info
+   */
+  async recordBackdateSale(
+    dto: RecordSaleDto,
+    userId: number,
+    externalManager?: EntityManager,
+  ): Promise<ResponseSuccess> {
+    const isExternalTransaction = !!externalManager;
+    let queryRunner: QueryRunner | undefined;
+    let manager: EntityManager;
+
+    // Setup manager
+    if (isExternalTransaction) {
+      manager = externalManager;
+    } else {
+      queryRunner = this.dataSource.createQueryRunner();
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+      manager = queryRunner.manager;
+    }
+
+    try {
+      // 1. Verify product exists
+      const product = await this.productCodesRepo.findOne({
+        where: { id: dto.productCodeId },
+        relations: ['product'],
+      });
+
+      if (!product) {
+        throw new NotFoundException(
+          `Product code ${dto.productCodeId} tidak ditemukan`,
+        );
+      }
+
+      // 2. Parse business date from invoice date
+      const targetDate = dto.invoiceDate
+        ? getJakartaDateString(new Date(dto.invoiceDate))
+        : getJakartaDateString(new Date());
+      const businessDate = new Date(targetDate);
+      const today = getJakartaDateString(new Date());
+
+      // 3. Check if backdate (past date)
+      const isBackdate = targetDate < today;
+
+      this.logger.log(
+        `[RECORD BACKDATE SALE] Product ${dto.productCodeId}, Date: ${targetDate}, IsBackdate: ${isBackdate}`,
+      );
+
+      // 4. Get or create daily inventory for the invoice date with pessimistic lock
+      let dailyInventory = await manager
+        .createQueryBuilder(DailyInventory, 'di')
+        .setLock('pessimistic_write')
+        .where('di.productCodeId = :productCodeId', {
+          productCodeId: dto.productCodeId,
+        })
+        .andWhere('di.businessDate = :businessDate', {
+          businessDate: targetDate,
+        })
+        .getOne();
+
+      if (!dailyInventory) {
+        // Create new record if doesn't exist
+        dailyInventory = await this.getOrCreateDailyInventory(
+          manager.queryRunner || queryRunner,
+          dto.productCodeId,
+          businessDate,
+          userId,
+        );
+      }
+
+      // 5. Calculate current stock at that date
+      const stokAwal = Number(dailyInventory.stokAwal ?? 0);
+      const barangMasuk = Number(dailyInventory.barangMasuk ?? 0);
+      const dipesan = Number(dailyInventory.dipesan ?? 0);
+      const barangOutRepack = Number(dailyInventory.barangOutRepack ?? 0);
+      const barangOutSample = Number(dailyInventory.barangOutSample ?? 0);
+      const barangOutProduksi = Number(dailyInventory.barangOutProduksi ?? 0);
+
+      const currentStock =
+        stokAwal +
+        barangMasuk -
+        dipesan -
+        barangOutRepack -
+        barangOutSample -
+        barangOutProduksi;
+
+      this.logger.log(
+        `[RECORD BACKDATE SALE] Product ${dto.productCodeId} at ${targetDate} - Current Stock: ${currentStock}, Requested: ${dto.quantity}`,
+      );
+
+      // 6. Strict stock validation
+      if (currentStock < dto.quantity) {
+        throw new BadRequestException(
+          `Stok tidak mencukupi untuk produk ${product.product?.name || dto.productCodeId} pada tanggal ${targetDate}. Stok tersedia: ${currentStock}, Dibutuhkan: ${dto.quantity}`,
+        );
+      }
+
+      // 7. Update daily inventory: increment dipesan
+      const quantityToAdd = Number(dto.quantity) || 0;
+      dailyInventory.dipesan = dipesan + quantityToAdd;
+      dailyInventory.updatedBy = userId;
+
+      await manager.save(DailyInventory, dailyInventory);
+
+      // 8. Propagate to future days if backdate
+      let propagatedDays = 0;
+      if (isBackdate) {
+        // Delta for propagation: adding to dipesan REDUCES stock, so propagate negative
+        const propagationDelta = -quantityToAdd;
+
+        // Log before propagation for debugging
+        const countBefore = await manager
+          .createQueryBuilder(DailyInventory, 'di')
+          .where('di.productCodeId = :productCodeId', {
+            productCodeId: dto.productCodeId,
+          })
+          .andWhere('di.businessDate > :fromDate', { fromDate: targetDate })
+          .getCount();
+
+        this.logger.log(
+          `[RECORD BACKDATE SALE] Product ${dto.productCodeId}, FromDate: ${targetDate}, Future records found: ${countBefore}`,
+        );
+
+        const result = await manager
+          .createQueryBuilder()
+          .update(DailyInventory)
+          .set({
+            stokAwal: () => `stokAwal + (${propagationDelta})`,
+          })
+          .where('productCodeId = :productCodeId', {
+            productCodeId: dto.productCodeId,
+          })
+          .andWhere('businessDate > :fromDate', { fromDate: targetDate })
+          .execute();
+
+        propagatedDays = result.affected || 0;
+
+        this.logger.log(
+          `[RECORD BACKDATE SALE] Propagated delta ${propagationDelta} to ${propagatedDays} future days`,
+        );
+      }
+
+      // 9. Re-fetch to get updated stokAkhir
+      const refreshedInventory = await manager.findOne(DailyInventory, {
+        where: { id: dailyInventory.id },
+      });
+
+      const balanceAfter = Number(refreshedInventory?.stokAkhir ?? 0);
+
+      // 10. Generate transaction number
+      const transactionNumber = await this.generateTransactionNumber(
+        manager.queryRunner || queryRunner,
+        'TRX',
+      );
+
+      // 11. Create transaction record with Indonesian notes
+      const transaction = new InventoryTransactions();
+      transaction.transactionNumber = transactionNumber;
+      transaction.transactionDate = new Date();
+      transaction.businessDate = businessDate;
+      transaction.transactionType = TransactionType.SALE;
+      transaction.productCodeId = dto.productCodeId;
+      transaction.quantity = dto.quantity;
+      transaction.balanceAfter = Number.isFinite(balanceAfter)
+        ? balanceAfter
+        : 0;
+
+      if (dto.orderId) {
+        transaction.orderId = dto.orderId;
+      }
+      transaction.status = TransactionStatus.COMPLETED;
+      transaction.notes = dto.notes || `Penjualan backdate pada ${targetDate}`;
+      transaction.createdBy = userId;
+
+      const savedTransaction = await manager.save(
+        InventoryTransactions,
+        transaction,
+      );
+
+      // 12. Reload inventory with relations
+      const updatedInventory = await manager.findOne(DailyInventory, {
+        where: { id: dailyInventory.id },
+        relations: ['productCode', 'productCode.product'],
+      });
+
+      // Commit if local transaction
+      if (!isExternalTransaction && queryRunner) {
+        await queryRunner.commitTransaction();
+      }
+
+      this.logger.log(
+        `[RECORD BACKDATE SALE] Completed: Product ${dto.productCodeId}, Qty ${dto.quantity}, Date ${targetDate}, Propagated ${propagatedDays} days`,
+      );
+
+      return this._success('Penjualan backdate berhasil dicatat', {
+        dailyInventory: updatedInventory,
+        transaction: savedTransaction,
+        propagation: {
+          isBackdate,
+          affectedDays: propagatedDays,
+          fromDate: targetDate,
+        },
+      });
+    } catch (error) {
+      if (!isExternalTransaction && queryRunner) {
+        await queryRunner.rollbackTransaction();
+      }
+      this.logger.error('[RECORD BACKDATE SALE] Failed', error);
+      throw error;
+    } finally {
+      if (!isExternalTransaction && queryRunner) {
+        await queryRunner.release();
+      }
+    }
+  }
+
+  /**
+   * Reverse sale with backdate support and propagation
+   * Updates: daily_inventory.dipesan-- at invoice date
+   * Propagates: stokAwal adjustment to all future days
+   *
+   * @param orderId Order ID being reversed
+   * @param productCodeId Product being reversed
+   * @param quantity Quantity to reverse
+   * @param userId User performing the action
+   * @param invoiceDate Original invoice date
+   * @param reason Reason for reversal (in Indonesian)
+   * @param externalManager Optional external EntityManager
+   * @returns Response with reversal details including propagation info
+   */
+  async reverseBackdateSale(
+    orderId: number,
+    productCodeId: number,
+    quantity: number,
+    userId: number,
+    invoiceDate: Date,
+    reason?: string,
+    externalManager?: EntityManager,
+  ): Promise<ResponseSuccess> {
+    const isExternalTransaction = !!externalManager;
+    let queryRunner: QueryRunner | undefined;
+    let manager: EntityManager;
+
+    // Setup manager
+    if (isExternalTransaction) {
+      manager = externalManager;
+    } else {
+      queryRunner = this.dataSource.createQueryRunner();
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+      manager = queryRunner.manager;
+    }
+
+    try {
+      // 1. Verify product exists
+      const product = await this.productCodesRepo.findOne({
+        where: { id: productCodeId },
+        relations: ['product'],
+      });
+
+      if (!product) {
+        throw new NotFoundException(
+          `Product code ${productCodeId} tidak ditemukan`,
+        );
+      }
+
+      // 2. Parse business date
+      const targetDate = getJakartaDateString(new Date(invoiceDate));
+      const businessDate = new Date(targetDate);
+      const today = getJakartaDateString(new Date());
+      const isBackdate = targetDate < today;
+
+      this.logger.log(
+        `[REVERSE BACKDATE SALE] Order ${orderId}, Product ${productCodeId}, Date: ${targetDate}, IsBackdate: ${isBackdate}`,
+      );
+
+      // 3. Get daily inventory with pessimistic lock
+      const dailyInventory = await manager
+        .createQueryBuilder(DailyInventory, 'di')
+        .setLock('pessimistic_write')
+        .where('di.productCodeId = :productCodeId', { productCodeId })
+        .andWhere('di.businessDate = :businessDate', {
+          businessDate: targetDate,
+        })
+        .getOne();
+
+      if (!dailyInventory) {
+        throw new NotFoundException(
+          `Daily inventory untuk produk ${productCodeId} pada tanggal ${targetDate} tidak ditemukan`,
+        );
+      }
+
+      // 4. Check if dipesan is sufficient
+      const currentDipesan = Number(dailyInventory.dipesan ?? 0);
+      if (currentDipesan < quantity) {
+        throw new BadRequestException(
+          `Tidak dapat membatalkan penjualan. Jumlah dipesan saat ini (${currentDipesan}) kurang dari jumlah yang dibatalkan (${quantity})`,
+        );
+      }
+
+      // 5. Update daily inventory: decrement dipesan
+      dailyInventory.dipesan = currentDipesan - quantity;
+      dailyInventory.updatedBy = userId;
+
+      await manager.save(DailyInventory, dailyInventory);
+
+      // 6. Propagate to future days if backdate
+      let propagatedDays = 0;
+      if (isBackdate) {
+        // Delta for propagation: reducing dipesan INCREASES stock, so propagate positive
+        const propagationDelta = quantity;
+
+        // Log before propagation for debugging
+        const countBefore = await manager
+          .createQueryBuilder(DailyInventory, 'di')
+          .where('di.productCodeId = :productCodeId', { productCodeId })
+          .andWhere('di.businessDate > :fromDate', { fromDate: targetDate })
+          .getCount();
+
+        this.logger.log(
+          `[REVERSE BACKDATE SALE] Product ${productCodeId}, FromDate: ${targetDate}, Future records found: ${countBefore}`,
+        );
+
+        const result = await manager
+          .createQueryBuilder()
+          .update(DailyInventory)
+          .set({
+            stokAwal: () => `stokAwal + (${propagationDelta})`,
+          })
+          .where('productCodeId = :productCodeId', { productCodeId })
+          .andWhere('businessDate > :fromDate', { fromDate: targetDate })
+          .execute();
+
+        propagatedDays = result.affected || 0;
+
+        this.logger.log(
+          `[REVERSE BACKDATE SALE] Propagated delta +${propagationDelta} to ${propagatedDays} future days`,
+        );
+      }
+
+      // 7. Re-fetch to get updated stokAkhir
+      const refreshedInventory = await manager.findOne(DailyInventory, {
+        where: { id: dailyInventory.id },
+      });
+
+      const balanceAfter = Number(refreshedInventory?.stokAkhir ?? 0);
+
+      // 8. Generate transaction number
+      const transactionNumber = await this.generateTransactionNumber(
+        manager.queryRunner || queryRunner,
+        'TRX',
+      );
+
+      // 9. Create reversal transaction record
+      const transaction = new InventoryTransactions();
+      transaction.transactionNumber = transactionNumber;
+      transaction.transactionDate = new Date();
+      transaction.businessDate = businessDate;
+      transaction.transactionType = TransactionType.SALE;
+      transaction.productCodeId = productCodeId;
+      transaction.quantity = quantity;
+      transaction.balanceAfter = balanceAfter;
+      transaction.orderId = orderId;
+      transaction.status = TransactionStatus.CANCELLED;
+      transaction.reason = reason || 'Pesanan diperbarui';
+      transaction.notes = `Pembatalan item pesanan (tanggal asli: ${targetDate})`;
+      transaction.createdBy = userId;
+
+      const savedTransaction = await manager.save(
+        InventoryTransactions,
+        transaction,
+      );
+
+      // 10. Reload inventory with relations
+      const updatedInventory = await manager.findOne(DailyInventory, {
+        where: { id: dailyInventory.id },
+        relations: ['productCode', 'productCode.product'],
+      });
+
+      // Commit if local transaction
+      if (!isExternalTransaction && queryRunner) {
+        await queryRunner.commitTransaction();
+      }
+
+      this.logger.log(
+        `[REVERSE BACKDATE SALE] Completed: Order ${orderId}, Product ${productCodeId}, Qty ${quantity}, Date ${targetDate}, Propagated ${propagatedDays} days`,
+      );
+
+      return this._success('Pembatalan penjualan backdate berhasil', {
+        dailyInventory: updatedInventory,
+        transaction: savedTransaction,
+        propagation: {
+          isBackdate,
+          affectedDays: propagatedDays,
+          fromDate: targetDate,
+        },
+      });
+    } catch (error) {
+      if (!isExternalTransaction && queryRunner) {
+        await queryRunner.rollbackTransaction();
+      }
+      this.logger.error('[REVERSE BACKDATE SALE] Failed', error);
+      throw error;
+    } finally {
+      if (!isExternalTransaction && queryRunner) {
+        await queryRunner.release();
+      }
     }
   }
 }

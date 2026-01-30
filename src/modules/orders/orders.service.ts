@@ -788,21 +788,30 @@ export class OrdersService extends BaseResponse {
 
       const isOriginalPast = currentInvoiceDate < today;
 
-      // Parse new invoice date from DTO
+      // Calculate days difference for 30-day limit
+      const daysDiff = Math.floor(
+        (today.getTime() - currentInvoiceDate.getTime()) /
+          (1000 * 60 * 60 * 24),
+      );
+
+      // Validation: Backdate orders older than 30 days cannot be updated
+      if (daysDiff > 30) {
+        throw new BadRequestException(
+          `Order dengan invoice lebih dari 30 hari yang lalu tidak dapat diperbarui. Invoice date: ${currentInvoiceDate.toLocaleDateString('id-ID')} (${daysDiff} hari yang lalu)`,
+        );
+      }
+
+      // Parse new invoice date from DTO - for backdate updates, keep the original date
+      // Users can only change order items, not the invoice date
       const newInvoiceDateFromDto = updateOrderDto.invoiceDate
         ? new Date(updateOrderDto.invoiceDate)
         : currentInvoiceDate;
       newInvoiceDateFromDto.setHours(0, 0, 0, 0);
 
-      // Validation: Past orders can only be updated if new invoice >= today
+      // Log backdate update attempt
       if (isOriginalPast) {
-        if (newInvoiceDateFromDto < today) {
-          throw new BadRequestException(
-            `Order dengan invoice tanggal ${currentInvoiceDate.toLocaleDateString('id-ID')} hanya dapat diubah ke tanggal hari ini atau masa depan. Tidak dapat mengubah ke tanggal lampau.`,
-          );
-        }
         this.logger.log(
-          `[ORDER UPDATE ${existingOrder.orderNumber}] Past order detected (${currentInvoiceDate.toLocaleDateString('id-ID')}). Allowing update to ${newInvoiceDateFromDto.toLocaleDateString('id-ID')}.`,
+          `[ORDER UPDATE ${existingOrder.orderNumber}] Backdate order detected (${currentInvoiceDate.toLocaleDateString('id-ID')}, ${daysDiff} days ago). Allowing update with propagation.`,
         );
       }
 
@@ -906,73 +915,39 @@ export class OrdersService extends BaseResponse {
       );
 
       // ✅ FIX: Use isOriginalPast flag that was calculated BEFORE invoice date was updated
-      // isOriginalPast is true if original invoice was before today
-      // We should only reverse if original invoice was TODAY (not past)
-      const shouldReverseInventory = !isOriginalPast;
+      // For both same-day and past orders, we now use the backdate-aware reversal
+      // that properly updates inventory at the original date and propagates
 
       this.logger.log(
-        `[ORDER UPDATE ${existingOrder.orderNumber}] Today: ${todayMidnight.toISOString()}, isOriginalPast: ${isOriginalPast}, shouldReverseInventory: ${shouldReverseInventory}`,
+        `[ORDER UPDATE ${existingOrder.orderNumber}] Today: ${todayMidnight.toISOString()}, isOriginalPast: ${isOriginalPast}`,
       );
 
-      // 5. Reverse old inventory transactions
-      // ✅ ONLY reverse if original invoice is TODAY (same-day)
-      // ❌ Skip reversal for PAST orders (inventory already snapshotted)
-      if (shouldReverseInventory) {
-        if (existingOrder.orderItems && existingOrder.orderItems.length > 0) {
-          this.logger.log(
-            `[ORDER UPDATE ${existingOrder.orderNumber}] Reversing ${existingOrder.orderItems.length} old items inventory (same-day order)`,
-          );
-
-          for (const oldItem of existingOrder.orderItems) {
-            try {
-              await this.inventoryTransactionService.reverseSale(
-                existingOrder.id,
-                oldItem.productCodeId,
-                oldItem.quantity,
-                userId,
-                `Order ${existingOrder.orderNumber} updated - reversing old item`,
-                originalInvoiceMidnight,
-              );
-            } catch (error) {
-              this.logger.error(
-                `[ORDER UPDATE ${existingOrder.orderNumber}] Failed to reverse inventory for product ${oldItem.productCodeId}: ${error.message}`,
-                error.stack,
-              );
-              // ✅ Still throw error to prevent partial update
-              throw new BadRequestException(
-                `Gagal membalikkan inventory untuk produk ${oldItem.productCodeId}: ${error.message}`,
-              );
-            }
-          }
-        }
-      } else {
-        // Past order - return old items to TODAY's inventory via barangMasuk
-        // Since past inventory is snapshotted, we can't reverse it
-        // Instead, we add the quantity back as incoming goods for today
+      // 5. Reverse old inventory transactions using backdate-aware method
+      // This works for both same-day and past orders with proper propagation
+      if (existingOrder.orderItems && existingOrder.orderItems.length > 0) {
         this.logger.log(
-          `[ORDER UPDATE ${existingOrder.orderNumber}] 📦 Returning ${existingOrder.orderItems?.length || 0} old items to today's inventory (original date: ${originalInvoiceMidnight.toLocaleDateString('id-ID')})`,
+          `[ORDER UPDATE ${existingOrder.orderNumber}] Reversing ${existingOrder.orderItems.length} old items inventory at date ${originalInvoiceMidnight.toLocaleDateString('id-ID')}`,
         );
 
-        if (existingOrder.orderItems && existingOrder.orderItems.length > 0) {
-          for (const oldItem of existingOrder.orderItems) {
-            try {
-              await this.inventoryTransactionService.returnStockFromCancelledOrder(
-                existingOrder.id,
-                oldItem.productCodeId,
-                oldItem.quantity,
-                userId,
-                existingOrder.orderNumber,
-                originalInvoiceMidnight,
-              );
-            } catch (error) {
-              this.logger.error(
-                `[ORDER UPDATE ${existingOrder.orderNumber}] ❌ Failed to return stock for product ${oldItem.productCodeId}: ${error.message}`,
-                error.stack,
-              );
-              throw new BadRequestException(
-                `Gagal mengembalikan stok untuk produk ${oldItem.productCodeId}: ${error.message}`,
-              );
-            }
+        for (const oldItem of existingOrder.orderItems) {
+          try {
+            await this.inventoryTransactionService.reverseBackdateSale(
+              existingOrder.id,
+              oldItem.productCodeId,
+              oldItem.quantity,
+              userId,
+              originalInvoiceMidnight,
+              `Pesanan ${existingOrder.orderNumber} diperbarui - item lama dibatalkan`,
+              queryRunner.manager,
+            );
+          } catch (error) {
+            this.logger.error(
+              `[ORDER UPDATE ${existingOrder.orderNumber}] Failed to reverse inventory for product ${oldItem.productCodeId}: ${error.message}`,
+              error.stack,
+            );
+            throw new BadRequestException(
+              `Gagal membalikkan inventory untuk produk ${oldItem.productCodeId}: ${error.message}`,
+            );
           }
         }
       }
@@ -1011,8 +986,8 @@ export class OrdersService extends BaseResponse {
         await queryRunner.manager.save(OrderItems, orderItem);
       }
 
-      // 10. Record new inventory transactions
-      // ✅ FIX: Use local timezone for new invoice date check
+      // 10. Record new inventory transactions using backdate-aware method
+      // Use the invoice date for recording (works for both same-day and backdate)
       const newInvoiceLocal = new Date(existingOrder.invoiceDate);
       const newInvoiceMidnight = new Date(
         newInvoiceLocal.getFullYear(),
@@ -1025,21 +1000,23 @@ export class OrdersService extends BaseResponse {
       );
       const isNewSameDay =
         newInvoiceMidnight.getTime() === todayMidnight.getTime();
+      const isNewPastOrToday = newInvoiceMidnight <= todayMidnight;
 
       this.logger.log(
-        `[ORDER UPDATE ${existingOrder.orderNumber}] NewInvoice: ${newInvoiceMidnight.toISOString()}, isNewSameDay: ${isNewSameDay}`,
+        `[ORDER UPDATE ${existingOrder.orderNumber}] NewInvoice: ${newInvoiceMidnight.toISOString()}, isNewSameDay: ${isNewSameDay}, isNewPastOrToday: ${isNewPastOrToday}`,
       );
 
-      if (isNewSameDay) {
+      // Record inventory for past or today orders (not future)
+      if (isNewPastOrToday) {
         for (const item of items) {
           try {
-            await this.inventoryTransactionService.recordSale(
+            await this.inventoryTransactionService.recordBackdateSale(
               {
                 productCodeId: item.productCodeId,
                 quantity: item.quantity,
                 orderId: id,
                 invoiceDate: newInvoiceMidnight,
-                notes: `Order ${existingOrder.orderNumber} updated`,
+                notes: `Pesanan ${existingOrder.orderNumber} diperbarui - item baru`,
               },
               userId,
               queryRunner.manager,
@@ -1050,7 +1027,7 @@ export class OrdersService extends BaseResponse {
               error.stack,
             );
             throw new BadRequestException(
-              `Failed to reserve inventory for product ${item.productName}: ${error.message}`,
+              `Gagal mencadangkan stok untuk produk ${item.productName}: ${error.message}`,
             );
           }
         }

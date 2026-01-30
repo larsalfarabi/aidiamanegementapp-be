@@ -175,8 +175,10 @@ export class DailyInventoryService extends BaseResponse {
   /**
    * Propagate stock change to future days
    * Updates 'stokAwal' for all daily_inventory records after the given date
+   *
+   * @public - Exposed for use by InventoryTransactionService for backdate order updates
    */
-  private async propagateStockChange(
+  async propagateStockChange(
     productCodeId: number,
     delta: number,
     fromDate: string,
