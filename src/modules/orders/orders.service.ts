@@ -5,7 +5,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, DataSource, In } from 'typeorm';
+import { Repository, Between, DataSource, In, Brackets } from 'typeorm';
 import { Orders } from './entity/orders.entity';
 import { OrderItems } from './entity/order_items.entity';
 import { Customers } from '../customers/entity/customers.entity';
@@ -528,6 +528,22 @@ export class OrdersService extends BaseResponse {
         startDate: filters.startDate,
         endDate: filters.endDate,
       });
+    }
+
+    if (filters.search) {
+      queryBuilder.andWhere(
+        new Brackets((qb) => {
+          qb.where('order.orderNumber LIKE :search', {
+            search: `%${filters.search}%`,
+          })
+            .orWhere('order.invoiceNumber LIKE :search', {
+              search: `%${filters.search}%`,
+            })
+            .orWhere('order.customerName LIKE :search', {
+              search: `%${filters.search}%`,
+            });
+        }),
+      );
     }
 
     const [result, count] = await queryBuilder
