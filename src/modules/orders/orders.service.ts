@@ -186,38 +186,43 @@ export class OrdersService extends BaseResponse {
       // 4. Get pricing from Map
       const customerCatalog = catalogMap.get(item.productCodeId);
 
+      // ✅ FIXED: Allow product not in customer catalog (price 0)
+      // This allows backdated orders or bonuses to be processed without blocking
+      let unitPrice = 0;
+      let customerCatalogId = null;
+      let discountPercentage = 0;
+
       if (!customerCatalog) {
-        throw new BadRequestException(
-          `Product ${productCodeData.productCode} is not in customer catalog. Please add to customer catalog first.`,
+        console.warn(
+          `[PRICING WARNING] Product ${productCodeData.productCode} is not in customer catalog. Setting price to 0.`,
         );
-      }
+      } else {
+        unitPrice = customerCatalog.customerPrice;
+        customerCatalogId = customerCatalog.id;
+        // discountPercentage = customerCatalog.discountPercentage || 0;
 
-      // Pricing Logic
-      const unitPrice = customerCatalog.customerPrice;
-      const customerCatalogId = customerCatalog.id;
-      const discountPercentage = 0; // customerCatalog.discountPercentage || 0;
+        // Date Validation (Logging only)
+        if (customerCatalog.effectiveDate || customerCatalog.expiryDate) {
+          const now = new Date();
+          now.setHours(0, 0, 0, 0);
 
-      // Date Validation (Logging only)
-      if (customerCatalog.effectiveDate || customerCatalog.expiryDate) {
-        const now = new Date();
-        now.setHours(0, 0, 0, 0);
+          if (
+            customerCatalog.effectiveDate &&
+            new Date(customerCatalog.effectiveDate) > now
+          ) {
+            console.warn(
+              `[PRICING WARNING] Product ${productCodeData.productCode} - Effective date in future`,
+            );
+          }
 
-        if (
-          customerCatalog.effectiveDate &&
-          new Date(customerCatalog.effectiveDate) > now
-        ) {
-          console.warn(
-            `[PRICING WARNING] Product ${productCodeData.productCode} - Effective date in future`,
-          );
-        }
-
-        if (
-          customerCatalog.expiryDate &&
-          new Date(customerCatalog.expiryDate) < now
-        ) {
-          console.warn(
-            `[PRICING WARNING] Product ${productCodeData.productCode} - Expiry date passed`,
-          );
+          if (
+            customerCatalog.expiryDate &&
+            new Date(customerCatalog.expiryDate) < now
+          ) {
+            console.warn(
+              `[PRICING WARNING] Product ${productCodeData.productCode} - Expiry date passed`,
+            );
+          }
         }
       }
 
