@@ -129,6 +129,10 @@ export class OrderFilterDto {
   @IsOptional()
   @IsString()
   orderNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
 }
 
 export class OrderResponseDto {
