@@ -6,7 +6,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, Between, In } from 'typeorm';
+import { Repository, DataSource, Between, In, QueryRunner } from 'typeorm';
 import BaseResponse from '../../../common/response/base.response';
 import {
   ProductionBatches,
@@ -19,18 +19,21 @@ import {
   ProductionStage,
   StageStatus,
 } from '../entities';
+import { ProductPackagingMaterial } from '../../products/entity/product-packaging-material.entity';
 import {
   CreateBatchDto,
   RecordStageDto,
   FilterBatchDto,
   CompleteBatchDto,
   CheckMaterialStockDto,
+  BottlingOutputDto,
 } from '../dto';
 import { ProductionFormulaService } from './production-formula.service';
 import { InventoryLegacyService } from '../../inventory/services/inventory-legacy.service';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { NotificationEventEmitter } from '../../notifications/services/notification-event-emitter.service';
 import { getJakartaDateString } from '../../../common/utils/date.util';
+import { DailyInventory } from '../../inventory/entity/daily-inventory.entity';
 
 @Injectable()
 export class ProductionBatchService extends BaseResponse {
@@ -49,6 +52,8 @@ export class ProductionBatchService extends BaseResponse {
     private readonly bottlingOutputRepository: Repository<ProductionBottlingOutput>,
     @InjectRepository(ProductCodes)
     private readonly productCodeRepository: Repository<ProductCodes>,
+    @InjectRepository(ProductPackagingMaterial)
+    private readonly packagingMaterialRepository: Repository<ProductPackagingMaterial>,
     private readonly dataSource: DataSource,
     private readonly productionFormulaService: ProductionFormulaService,
     private readonly inventoryService: InventoryLegacyService,
@@ -56,7 +61,6 @@ export class ProductionBatchService extends BaseResponse {
   ) {
     super();
   }
-
   /**
    * Generate Batch Number
    * Format: BATCH-YYYYMMDD-XXX
@@ -413,6 +417,41 @@ export class ProductionBatchService extends BaseResponse {
         ProductionMaterialUsage,
         materialUsageRecords,
       );
+
+      // 5b. [NEW] Plan Packaging Materials (if specific SKU is defined)
+      // Adds bottles, caps, stickers to the usage list so they appear in Complete Batch dialog
+      if (formula.productCodeId) {
+        const packagingRules = await this.packagingMaterialRepository.find({
+          where: { productCodeId: formula.productCodeId, isActive: true },
+          relations: ['materialProductCode'],
+        });
+
+        if (packagingRules.length > 0) {
+          const packagingUsages = packagingRules.map((rule) => {
+            return this.materialUsageRepository.create({
+              batchId: savedBatch.id,
+              materialProductCodeId: rule.materialProductCodeId,
+              plannedQuantity: 0, // Set to 0 as we can't easily calculate units from liters here yet
+              actualQuantity: 0,
+              wasteQuantity: 0,
+              unit: 'PCS',
+              unitCost: 0,
+              totalCost: 0,
+              createdBy: userId,
+              notes: 'Auto-added from Packaging Rules',
+            });
+          });
+
+          await queryRunner.manager.save(
+            ProductionMaterialUsage,
+            packagingUsages,
+          );
+
+          this.logger.log(
+            `Added ${packagingUsages.length} packaging materials to batch ${batchNumber}`,
+          );
+        }
+      }
 
       this.logger.log(
         `Created ${materialUsageRecords.length} material usage records for batch ${batchNumber}`,
@@ -1278,6 +1317,10 @@ export class ProductionBatchService extends BaseResponse {
         queryRunner,
       );
 
+      // 3b. [NEW] Validate Packaging Stock Availability
+      // Prevent completion if packaging materials are insufficient
+      await this.validatePackagingStock(dto.bottlingOutputs, queryRunner);
+
       // 4. Update batch with concentrate and production info
       batch.actualConcentrate = dto.actualConcentrate;
       batch.notes = dto.notes || batch.notes;
@@ -1345,6 +1388,14 @@ export class ProductionBatchService extends BaseResponse {
 
         // Create PRODUCTION_IN for each bottling output
         inventoryTransactions = await this.createBottlingInTransactions(
+          batch,
+          bottlingOutputs,
+          userId,
+          queryRunner,
+        );
+
+        // ✅ NEW: Automatic Packaging Material Deduction
+        await this.deductPackagingMaterials(
           batch,
           bottlingOutputs,
           userId,
@@ -1558,5 +1609,288 @@ export class ProductionBatchService extends BaseResponse {
     }
 
     return transactions;
+  }
+
+  /**
+   * Deduct Packaging Materials based on Bottling Output
+   *
+   * Logic:
+   * 1. Check if Batch Product is "canBeProduced" (Intermediate Goods). If TRUE -> SKIP (unless Force logic applied).
+   *    User Rule: "produk selain Barang Jadi yang dapat di produksi atau field canBeProduced = true di kecualikan"
+   * 2. For each Bottling Output (SKU):
+   *    a. Find active ProductPackagingMaterial rules
+   *    b. Calculate total packaging needed (Output Qty * Rule Qty)
+   *    c. Record Material Usage (for cost)
+   *    d. Deduct from Inventory (Backdated to Production Date)
+   */
+  private async deductPackagingMaterials(
+    batch: ProductionBatches,
+    bottlingOutputs: ProductionBottlingOutput[],
+    userId: number,
+    queryRunner: any,
+  ) {
+    // 1. Check Exclusion Rule
+    // If productId is loaded in batch.product, use it. Otherwise fetch.
+    let product = batch.product;
+    if (!product) {
+      product = await queryRunner.manager.findOne(
+        queryRunner.manager.getRepository('Products').target,
+        { where: { id: batch.productId } },
+      );
+    }
+
+    // 2026-02-10: Removed strict exclusion for 'canBeProduced'.
+    // Finished Goods (e.g. Bottled Drinks) are 'canBeProduced' but DO need packaging.
+    // We rely on the existence of ProductPackagingMaterial rules instead.
+
+    // if (product?.canBeProduced) {
+    //   this.logger.log(
+    //     `Batch ${batch.batchNumber}: Product ${product.name} is marked as 'canBeProduced'. Skipping automatic packaging deduction.`,
+    //   );
+    //   return;
+    // }
+
+    this.logger.log(
+      `Batch ${batch.batchNumber}: calculating packaging deduction for ${bottlingOutputs.length} outputs...`,
+    );
+
+    const packagingUsages: any[] = [];
+
+    for (const output of bottlingOutputs) {
+      // Find packaging rules for this finished good SKU
+      // Use the injected repository but with queryRunner manager to be safe within transaction?
+      // Actually, since ProductPackagingMaterial is Master Data, reading it outside transaction is fine,
+      // but inside transaction is safer for consistency if master data changes.
+      // We'll use queryRunner.manager to query the entity.
+
+      const packagingRules = await queryRunner.manager.find(
+        ProductPackagingMaterial,
+        {
+          where: {
+            productCodeId: output.productCodeId,
+            isActive: true,
+          },
+          relations: ['materialProductCode'],
+        },
+      );
+
+      if (!packagingRules || packagingRules.length === 0) {
+        this.logger.warn(
+          `No packaging rules found for ProductCode ID ${output.productCodeId} (Batch ${batch.batchNumber})`,
+        );
+        continue;
+      }
+
+      for (const rule of packagingRules) {
+        // Calculate Quantity needed
+        // Rule applied to Total Bottles (including waste)?
+        // Usually packaging is consumed for both Good and Waste bottles.
+        // But if waste is "liquid waste", maybe bottle is saved?
+        // Assumption: Waste Quantity in Bottling usually means "Failed Bottles" -> Packaging is consumed.
+        // output.quantity = Good
+        // output.wasteQuantity = Bad
+        const totalBottles =
+          Number(output.quantity) + Number(output.wasteQuantity || 0);
+
+        const neededQty = totalBottles * Number(rule.quantity);
+
+        // Add to usage list
+        packagingUsages.push({
+          materialProductCodeId: rule.materialProductCodeId, // Packaging SKU (e.g., Bottle 5L)
+          actualQuantity: neededQty,
+          unit: 'PCS', // Standard unit for packaging
+          unitCost: 0, // Will be fetched/calculated if needed? Or let inventory service handle cost?
+          // ProductionMaterialUsage needs cost for Batch Costing.
+          // Note: createMaterialOutTransactions calls inventoryService which might handle FIFO cost.
+          // ProductionMaterialUsage usually stores the cost *at that time*.
+          notes: `Auto-deducted for ${output.quantity}x ${output.productCodeId}`,
+        });
+      }
+    }
+
+    if (packagingUsages.length === 0) {
+      return;
+    }
+
+    // Consolidate usages (if multiple outputs use same bottle, e.g. different variants?? No, outputs are SKUs)
+    // But if we have multiple lines of same packaging material, sum them up.
+    // Map<materialId, quantity>
+    const consolidatedMap = new Map<number, number>();
+    packagingUsages.forEach((u) => {
+      const current = consolidatedMap.get(u.materialProductCodeId) || 0;
+      consolidatedMap.set(u.materialProductCodeId, current + u.actualQuantity);
+    });
+
+    // Save to ProductionMaterialUsage
+    const packagingMaterialUsages: ProductionMaterialUsage[] = [];
+
+    for (const [materialId, qty] of consolidatedMap.entries()) {
+      // Create Usage Record
+      const usage = new ProductionMaterialUsage();
+      usage.batchId = batch.id;
+      usage.materialProductCodeId = materialId;
+      usage.actualQuantity = qty;
+      usage.unit = 'PCS'; // Default
+      usage.notes = 'System Auto-Deduction (Packaging)';
+      usage.createdBy = userId;
+      usage.updatedBy = userId;
+      usage.plannedQuantity = 0; // Fix: Required field
+      usage.unitCost = 0; // Fix: Required field (will be updated by inventory transaction?)
+      usage.totalCost = 0; // Fix: Required field
+      // Note: Cost will be 0 initially here, but let's try to get standard cost if possible?
+      // Or we let the "Material Out" transaction update the cost?
+      // Currently ProductionMaterialUsage.unitCost is manually input or fetched from formula.
+      // For auto-deduction, we might interpret 0 cost.
+
+      const savedUsage = await queryRunner.manager.save(
+        ProductionMaterialUsage,
+        usage,
+      );
+      packagingMaterialUsages.push(savedUsage);
+    }
+
+    this.logger.log(
+      `Batch ${batch.batchNumber}: Recorded ${packagingMaterialUsages.length} packaging material usages. Deducting inventory...`,
+    );
+
+    // Trigger Inventory Deduction (Backdated)
+    // We reuse createMaterialOutTransactions logic which calls recordMaterialProduction
+    // IMPORTANT: recordMaterialProduction handles logic to use FIFO/Average cost??
+    // Let's check inventoryService.recordMaterialProduction.
+    // It creates PRODUCTION_OUT.
+    // If we want the Batch Cost to reflect Packaging Cost, we need the Cost from Inventory.
+
+    await this.createMaterialOutTransactions(
+      batch,
+      packagingMaterialUsages, // Only the packaging ones
+      userId,
+      queryRunner,
+    );
+  }
+
+  /**
+   * Validate that we have enough packaging materials for the planned bottling outputs.
+   */
+  private async validatePackagingStock(
+    bottlingOutputs: BottlingOutputDto[],
+    queryRunner: QueryRunner,
+  ): Promise<void> {
+    const packagingRequirements = new Map<
+      number,
+      { qty: number; name: string; code: string }
+    >();
+
+    for (const output of bottlingOutputs) {
+      if (!output.productCodeId) continue;
+
+      // Get Rules for this Output SKU
+      const rules = await this.packagingMaterialRepository.find({
+        where: { productCodeId: output.productCodeId, isActive: true },
+        relations: ['materialProductCode', 'materialProductCode.product'],
+      });
+
+      if (rules.length === 0) continue;
+
+      const totalBottles =
+        Number(output.quantity) + Number(output.wasteQuantity || 0);
+
+      for (const rule of rules) {
+        const requiredQty = totalBottles * Number(rule.quantity);
+        const existing = packagingRequirements.get(rule.materialProductCodeId);
+
+        if (existing) {
+          existing.qty += requiredQty;
+        } else {
+          packagingRequirements.set(rule.materialProductCodeId, {
+            qty: requiredQty,
+            name: rule.materialProductCode.product.name,
+            code: rule.materialProductCode.productCode,
+          });
+        }
+      }
+    }
+
+    if (packagingRequirements.size === 0) return;
+
+    // Get Today's Date for Stock Check (Jakarta Time)
+    const date = new Date().toLocaleString('en-US', {
+      timeZone: 'Asia/Jakarta',
+    });
+    const jakartaDate = new Date(date);
+    jakartaDate.setHours(0, 0, 0, 0);
+
+    const validationItems = [];
+    let isValid = true;
+
+    for (const [materialId, req] of packagingRequirements) {
+      // Check Daily Inventory for TODAY
+      const inventory = await queryRunner.manager.findOne(DailyInventory, {
+        where: {
+          productCodeId: materialId,
+          businessDate: jakartaDate,
+        },
+      });
+
+      const currentStock = Number(inventory?.stokAkhir || 0);
+      const shortage = Math.max(0, req.qty - currentStock);
+      const isInsufficient = currentStock < req.qty;
+
+      if (isInsufficient) {
+        isValid = false;
+      }
+
+      validationItems.push({
+        materialProductCodeId: materialId,
+        materialCode: req.code,
+        materialName: req.name,
+        categoryName: 'KEMASAN', // Hardcoded as this is packaging validation
+        unit: 'PCS',
+        requestedQuantity: req.qty,
+        availableStock: currentStock,
+        shortage: shortage,
+        status:
+          currentStock === 0
+            ? 'OUT_OF_STOCK'
+            : isInsufficient
+              ? 'INSUFFICIENT'
+              : 'SUFFICIENT',
+        isBlocking: isInsufficient,
+      });
+    }
+
+    if (!isValid) {
+      const insufficientCount = validationItems.filter(
+        (i) => i.status === 'INSUFFICIENT',
+      ).length;
+      const outOfStockCount = validationItems.filter(
+        (i) => i.status === 'OUT_OF_STOCK',
+      ).length;
+
+      const result = {
+        isValid: false,
+        shouldBlock: true,
+        productionDate: date,
+        checkDate: new Date().toISOString(),
+        formulaName: 'Packaging Validation', // Generic name
+        targetLiters: 0, // Not relevant for this context
+        items: validationItems,
+        summary: {
+          totalMaterials: validationItems.length,
+          sufficientMaterials:
+            validationItems.length - insufficientCount - outOfStockCount,
+          lowStockMaterials: 0,
+          insufficientMaterials: insufficientCount,
+          outOfStockMaterials: outOfStockCount,
+        },
+        message: 'Stok kemasan tidak mencukupi untuk menyelesaikan batch ini.',
+        actionRequired: [
+          'Lakukan pembelian kemasan',
+          'Lakukan penyesuaian stok jika stok fisik tersedia',
+          'Kurangi jumlah hasil produksi',
+        ],
+      };
+
+      throw new BadRequestException(result);
+    }
   }
 }

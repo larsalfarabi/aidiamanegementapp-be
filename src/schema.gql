@@ -19,6 +19,11 @@ type ActiveCustomersByType {
   total: Int!
 }
 
+type AvailableMonth {
+  month: Int!
+  year: Int!
+}
+
 type BatchSummary {
   batchNumber: String!
   id: Int!
@@ -29,6 +34,7 @@ type BatchSummary {
 
 type DashboardData {
   activeCustomers: ActiveCustomersByType!
+  availableMonths: [AvailableMonth!]
   lowStockSummary: LowStockSummary!
   productionSummary: ProductionSummary!
   recentActivities: [RecentActivity!]!
@@ -99,9 +105,10 @@ type ProductionSummary {
 }
 
 type Query {
-  dashboardData: DashboardData!
-  dashboardStats: DashboardStatsV2!
-  salesChart: [SalesChartData!]!
+  availableMonths: [AvailableMonth!]!
+  dashboardData(month: Int, year: Int): DashboardData!
+  dashboardStats(month: Int, year: Int): DashboardStatsV2!
+  salesChart(month: Int, year: Int): [SalesChartData!]!
 }
 
 type RecentActivity {

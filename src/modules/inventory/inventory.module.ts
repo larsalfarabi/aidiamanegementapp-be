@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { InventoryController } from './inventory.controller';
 import { InventoryLegacyService } from './services/inventory-legacy.service';
@@ -25,6 +25,7 @@ import { PermissionGuard } from '../auth/guards/permission.guard';
 import { Users } from '../users/entities/users.entity';
 import { RedisModule } from '../redis/redis.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { OrdersModule } from '../orders/orders.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     ]),
     RedisModule,
     NotificationsModule, // Import NotificationsModule for notification events
+    forwardRef(() => OrdersModule), // For OrderInventoryCronService (manual reset integration)
   ],
   controllers: [InventoryController],
   providers: [

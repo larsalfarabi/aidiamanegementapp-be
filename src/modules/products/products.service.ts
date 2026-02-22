@@ -17,6 +17,10 @@ import {
   DeleteProductCodeDto,
   UpdateProductCodeDto,
 } from './dto/products.dto';
+import {
+  CreatePackagingMaterialDto,
+  UpdatePackagingMaterialDto,
+} from './dto/packaging-material.dto';
 import { RedisService } from '../redis/redis.service';
 import { Pagination } from '../../common/decorator/pagination.decorator';
 import { Products } from './entity/products.entity';
@@ -25,6 +29,7 @@ import {
   ProductCategories,
   CategoryType,
 } from './entity/product_categories.entity';
+import { ProductPackagingMaterial } from './entity/product-packaging-material.entity';
 import { ProductCodeQueryDto, QueryProductDto } from './dto/products.dto';
 import * as ExcelJS from 'exceljs';
 
@@ -40,6 +45,8 @@ export class ProductsService extends BaseResponse {
     private readonly productSizeRepo: Repository<ProductSizes>,
     @InjectRepository(ProductCategories)
     private readonly productCategoryRepo: Repository<ProductCategories>,
+    @InjectRepository(ProductPackagingMaterial)
+    private readonly packagingMaterialRepo: Repository<ProductPackagingMaterial>,
     private readonly redisService: RedisService,
   ) {
     super();
@@ -1382,5 +1389,281 @@ export class ProductsService extends BaseResponse {
     }
 
     return result;
+  }
+
+  // * --- PACKAGING MATERIALS CRUD --- */
+
+  /**
+   * Get all packaging materials for a product code
+   */
+  async getPackagingMaterials(productCodeId: number): Promise<ResponseSuccess> {
+    // Verify product code exists and is Barang Jadi
+    const productCode = await this.productCodeRepo.findOne({
+      where: { id: productCodeId },
+      relations: ['category', 'product', 'size'],
+    });
+
+    if (!productCode) {
+      throw new NotFoundException(
+        `Product code dengan ID ${productCodeId} tidak ditemukan`,
+      );
+    }
+
+    const materials = await this.packagingMaterialRepo.find({
+      where: { productCodeId, isActive: true },
+      relations: [
+        'materialProductCode',
+        'materialProductCode.product',
+        'materialProductCode.size',
+      ],
+      order: { createdAt: 'ASC' },
+    });
+
+    // Map to a cleaner response
+    const result = materials.map((m) => ({
+      id: m.id,
+      materialProductCodeId: m.materialProductCodeId,
+      productCode: m.materialProductCode?.productCode || '',
+      productName: m.materialProductCode?.product?.name || '',
+      sizeName: m.materialProductCode?.size?.sizeValue || '',
+      quantity: m.quantity,
+      isActive: m.isActive,
+      createdAt: m.createdAt,
+    }));
+
+    return this._success('Berhasil mengambil data kemasan', result);
+  }
+
+  /**
+   * Add a packaging material mapping to a product code
+   */
+  async addPackagingMaterial(
+    productCodeId: number,
+    dto: CreatePackagingMaterialDto,
+  ): Promise<ResponseSuccess> {
+    // Verify product code exists
+    const productCode = await this.productCodeRepo.findOne({
+      where: { id: productCodeId },
+      relations: ['category'],
+    });
+
+    if (!productCode) {
+      throw new NotFoundException(
+        `Product code dengan ID ${productCodeId} tidak ditemukan`,
+      );
+    }
+
+    if (productCode.category?.name !== 'Barang Jadi') {
+      throw new BadRequestException(
+        'Kemasan hanya dapat ditambahkan untuk produk Barang Jadi',
+      );
+    }
+
+    // Verify material product code exists
+    const materialPC = await this.productCodeRepo.findOne({
+      where: { id: dto.materialProductCodeId },
+      relations: ['category'],
+    });
+
+    if (!materialPC) {
+      throw new NotFoundException(
+        `Material product code dengan ID ${dto.materialProductCodeId} tidak ditemukan`,
+      );
+    }
+
+    // Check for duplicate
+    const existing = await this.packagingMaterialRepo.findOne({
+      where: {
+        productCodeId,
+        materialProductCodeId: dto.materialProductCodeId,
+      },
+    });
+
+    if (existing) {
+      if (existing.isActive) {
+        throw new ConflictException(
+          `Material ${materialPC.productCode} sudah ditambahkan untuk produk ini`,
+        );
+      }
+      // Re-activate if previously soft-deleted
+      existing.isActive = true;
+      existing.quantity = dto.quantity ?? 1;
+      await this.packagingMaterialRepo.save(existing);
+      return this._success('Berhasil mengaktifkan kembali kemasan', existing);
+    }
+
+    // Create new mapping
+    const newMapping = this.packagingMaterialRepo.create({
+      productCodeId,
+      materialProductCodeId: dto.materialProductCodeId,
+      quantity: dto.quantity ?? 1,
+      isActive: true,
+      createdBy: dto.createdBy,
+    });
+
+    const saved = await this.packagingMaterialRepo.save(newMapping);
+
+    return this._success('Berhasil menambahkan kemasan', saved);
+  }
+
+  /**
+   * Update a packaging material mapping (qty, isActive)
+   */
+  async updatePackagingMaterial(
+    packagingId: number,
+    dto: UpdatePackagingMaterialDto,
+  ): Promise<ResponseSuccess> {
+    const packaging = await this.packagingMaterialRepo.findOne({
+      where: { id: packagingId },
+    });
+
+    if (!packaging) {
+      throw new NotFoundException(
+        `Packaging material dengan ID ${packagingId} tidak ditemukan`,
+      );
+    }
+
+    if (dto.quantity !== undefined) {
+      packaging.quantity = dto.quantity;
+    }
+    if (dto.isActive !== undefined) {
+      packaging.isActive = dto.isActive;
+    }
+    if (dto.updatedBy !== undefined) {
+      packaging.updatedBy = dto.updatedBy as any;
+    }
+
+    const updated = await this.packagingMaterialRepo.save(packaging);
+
+    return this._success('Berhasil mengupdate kemasan', updated);
+  }
+
+  /**
+   * Soft-delete a packaging material mapping
+   */
+  async removePackagingMaterial(packagingId: number): Promise<ResponseSuccess> {
+    const packaging = await this.packagingMaterialRepo.findOne({
+      where: { id: packagingId },
+    });
+
+    if (!packaging) {
+      throw new NotFoundException(
+        `Packaging material dengan ID ${packagingId} tidak ditemukan`,
+      );
+    }
+
+    packaging.isActive = false;
+    await this.packagingMaterialRepo.save(packaging);
+
+    return this._success('Berhasil menghapus kemasan');
+  }
+
+  /**
+   * Auto-suggest packaging materials based on product size
+   * Returns list of suggested material product codes with default quantities
+   */
+  async autoSuggestPackaging(productCodeId: number): Promise<ResponseSuccess> {
+    const productCode = await this.productCodeRepo.findOne({
+      where: { id: productCodeId },
+      relations: ['category', 'size'],
+    });
+
+    if (!productCode) {
+      throw new NotFoundException(
+        `Product code dengan ID ${productCodeId} tidak ditemukan`,
+      );
+    }
+
+    if (productCode.category?.name !== 'Barang Jadi') {
+      throw new BadRequestException(
+        'Auto-suggest hanya tersedia untuk produk Barang Jadi',
+      );
+    }
+
+    const sizeValue = (productCode.size?.sizeValue || '').toUpperCase();
+
+    // Define mapping rules matching seed-packaging.ts logic
+    type SuggestRule = { code: string; qty: number };
+    let suggestions: SuggestRule[] = [];
+
+    if (
+      sizeValue.includes('5 LITER') ||
+      sizeValue === '5L' ||
+      sizeValue === '5 L'
+    ) {
+      suggestions = [
+        { code: 'BKBT5', qty: 1 },
+        { code: 'BKTTP5', qty: 1 },
+        { code: 'BKST5', qty: 1 },
+      ];
+    } else if (
+      sizeValue.includes('1 LITER') ||
+      sizeValue === '1L' ||
+      sizeValue === '1 L'
+    ) {
+      suggestions = [
+        { code: 'BKBT1', qty: 1 },
+        { code: 'BKTTP1', qty: 1 },
+        { code: 'BKST1', qty: 1 },
+        { code: 'BKKRTN1', qty: 0 },
+      ];
+    } else if (sizeValue.includes('600 ML') || sizeValue === '600ML') {
+      suggestions = [
+        { code: 'BKBT600', qty: 1 },
+        { code: 'BKTTP600', qty: 1 },
+        { code: 'BKST600', qty: 1 },
+        { code: 'BKKRTN600', qty: 0 },
+      ];
+    } else if (sizeValue.includes('250 ML') || sizeValue === '250ML') {
+      suggestions = [
+        { code: 'BKBT250', qty: 1 },
+        { code: 'BKTTP250', qty: 1 },
+        { code: 'BKST250', qty: 1 },
+        { code: 'BKKRTN250', qty: 0 },
+      ];
+    } else if (sizeValue.includes('120 ML') || sizeValue.includes('120ML')) {
+      suggestions = [
+        { code: 'BKCUP120', qty: 1 },
+        { code: 'BKLD120', qty: 1 },
+      ];
+    }
+
+    if (suggestions.length === 0) {
+      return this._success(
+        `Tidak ada saran kemasan untuk ukuran ${productCode.size?.sizeValue || 'tidak diketahui'}`,
+        [],
+      );
+    }
+
+    // Resolve codes to product code IDs
+    const existingMaterials = await this.packagingMaterialRepo.find({
+      where: { productCodeId, isActive: true },
+      select: ['materialProductCodeId'],
+    });
+    const existingIds = new Set(
+      existingMaterials.map((m) => m.materialProductCodeId),
+    );
+
+    const result: any[] = [];
+    for (const s of suggestions) {
+      const pc = await this.productCodeRepo.findOne({
+        where: { productCode: s.code },
+        relations: ['product', 'size'],
+      });
+      if (pc && !existingIds.has(pc.id)) {
+        result.push({
+          materialProductCodeId: pc.id,
+          productCode: pc.productCode,
+          productName: pc.product?.name || '',
+          sizeName: pc.size?.sizeValue || '',
+          quantity: s.qty,
+        });
+      }
+    }
+
+    return this._success(
+      `Ditemukan ${result.length} saran kemasan untuk ukuran ${productCode.size?.sizeValue || ''}`,
+      result,
+    );
   }
 }

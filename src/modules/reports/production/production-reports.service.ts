@@ -15,6 +15,8 @@ import { FormulaMaterials } from '../../production/entities/formula-materials.en
 import { ProductionBatches } from '../../production/entities/production-batches.entity';
 import { ProductCodes } from '../../products/entity/product_codes.entity';
 import { ProductSizes } from '../../products/entity/product_sizes.entity';
+import { ProductPackagingMaterial } from '../../products/entity/product-packaging-material.entity';
+import { ProductionBottlingOutput } from '../../production/entities/production-bottling-output.entity';
 
 export interface MaterialUsageSummary {
   code: string;
@@ -47,6 +49,10 @@ export class ProductionReportsService {
     private readonly batchRepo: Repository<ProductionBatches>,
     @InjectRepository(ProductCodes)
     private readonly productCodesRepo: Repository<ProductCodes>,
+    @InjectRepository(ProductPackagingMaterial)
+    private readonly productPackagingRepo: Repository<ProductPackagingMaterial>,
+    @InjectRepository(ProductionBottlingOutput)
+    private readonly bottlingOutputRepo: Repository<ProductionBottlingOutput>,
   ) {}
 
   async getMaterialUsageSummary(filter: ProductionReportFilterDto): Promise<{
@@ -206,7 +212,6 @@ export class ProductionReportsService {
     const workbook = new ExcelJS.Workbook();
 
     // 1. Fetch Sub Categories (CategoryType.SUB = 'SUB')
-    // Note: Adjust 'SUB' if your enum is strict. Based on common sense for now.
     const subCategories = await this.categoryRepo.find({
       where: { categoryType: 'SUB' as any },
       order: { name: 'ASC' },
@@ -296,8 +301,7 @@ export class ProductionReportsService {
       let productNo = 1;
 
       for (const product of products) {
-        // 4. Fetch Master Formula Materials (Pattern)
-        // Find latest active formula
+        // A. Fetch Master Formula Materials (Ingredients)
         const formulas = await this.formulaRepo.find({
           where: { productId: product.id, isActive: true },
           order: { version: 'DESC' },
@@ -314,45 +318,137 @@ export class ProductionReportsService {
 
         const activeFormula = formulas[0];
 
-        // Build "Master List" of materials from formula
+        // Filter: Only show products with an Active Formula
+        if (!activeFormula) {
+          continue;
+        }
+
+        // Mappings for Data
         const materialMap = new Map<
           string,
-          { code: string; name: string; unit: string }
+          {
+            code: string;
+            name: string;
+            unit: string;
+            type: 'FORMULA' | 'PACKAGING' | 'OUTPUT';
+          }
         >();
-        const formulaMaterialCodes: string[] = [];
+        const formulaCodes: string[] = [];
 
+        // 1. Populate Formula Materials
         if (activeFormula && activeFormula.materials) {
           activeFormula.materials.sort((a, b) => a.sequence - b.sequence);
           activeFormula.materials.forEach((fm) => {
             const pCode = fm.materialProductCode.productCode;
             if (!materialMap.has(pCode)) {
+              const size = fm.materialProductCode?.size?.sizeValue;
+              const name =
+                `${fm.materialProductCode.product.name} ${fm.materialProductCode.category.name === 'Barang Jadi' ? fm.materialProductCode.product.category.name.toUpperCase() : ''} ${fm.materialProductCode.category.name === 'Barang Jadi' ? fm.materialProductCode.product.productType : ''} ${fm.materialProductCode.category.name === 'Barang Jadi' ? '@ ' + size : ''}`.trim();
               materialMap.set(pCode, {
                 code: pCode,
-                name: fm.materialProductCode.product.name,
-                unit: fm.unit,
-                // Extra fields for formatting
-                subCategory:
-                  fm.materialProductCode.product.category?.name.toUpperCase(),
-                productType: fm.materialProductCode.product.productType,
-                size: fm.materialProductCode.size?.sizeValue,
-                mainCategory: fm.materialProductCode.category?.name,
-              } as any);
-              formulaMaterialCodes.push(pCode);
+                name: name,
+                unit:
+                  fm.materialProductCode.category.name === 'Barang Jadi'
+                    ? size!
+                    : fm.unit!,
+                type: 'FORMULA',
+              });
+              formulaCodes.push(pCode);
             }
           });
         }
 
-        // 5. Fetch Actual Usage Data for this Product + Date Range
-        // 5. Fetch Actual Usage Data for this Product + Date Range
-        // FIX: Use DATE_FORMAT to force raw string return "YYYY-MM-DD" bypassing timezone/driver parsing issues
+        // 2. Fetch & Populate Packaging Materials
+        // FIX: Use QueryBuilder to correctly join ProductCodes to match `product.id`
+        // ProductPackagingMaterial.productCodeId -> ProductCodes.id
+        // ProductCodes.productId -> Products.id
+        const packagingMaterials = await this.productPackagingRepo
+          .createQueryBuilder('ppm')
+          .leftJoinAndSelect('ppm.materialProductCode', 'mpc')
+          .leftJoinAndSelect('mpc.product', 'mp')
+          .leftJoinAndSelect('mpc.size', 'ms')
+          .innerJoin('ppm.productCode', 'pc') // Join the Finished Good SKU
+          .where('pc.productId = :pid', { pid: product.id })
+          .andWhere('ppm.isActive = :active', { active: true })
+          .getMany();
+
+        const packagingCodes: string[] = [];
+
+        packagingMaterials.forEach((pm) => {
+          const pCode = pm.materialProductCode.productCode;
+          if (!materialMap.has(pCode)) {
+            const size = pm.materialProductCode.size?.sizeValue || '';
+            const name =
+              `${pm.materialProductCode.product.name} ${size}`.trim();
+            // ProductCodes doesn't have 'unit', it's likely on Product or we default to PCS if not found
+            materialMap.set(pCode, {
+              code: pCode,
+              name: name,
+              unit: size, // Defaulting to PCS as ProductCodes entity usually doesn't store unit
+              type: 'PACKAGING',
+            });
+            packagingCodes.push(pCode);
+          }
+        });
+
+        // 3. Fetch & Populate Finished Goods (Bottling Outputs)
+        // We need distinct Output Product Codes for this product in the date range
+        const bottlingOutputs = await this.bottlingOutputRepo
+          .createQueryBuilder('output')
+          .leftJoin('output.batch', 'batch')
+          .leftJoin('output.productCode', 'pc')
+          .leftJoin('pc.product', 'p')
+          .leftJoin('pc.size', 's')
+          .leftJoin('p.category', 'subCategory')
+          .select([
+            'pc.productCode as mCode',
+            'p.name as pName',
+            's.sizeValue as sValue',
+            'subCategory.name as subCategoryName',
+            'p.productType as pType',
+          ])
+          .where('batch.productId = :pid', { pid: product.id })
+          .andWhere('batch.productionDate BETWEEN :start AND :end', {
+            start: filter.startDate,
+            end: filter.endDate,
+          })
+          .distinct(true)
+          .getRawMany();
+
+        const outputCodes: string[] = [];
+
+        bottlingOutputs.forEach((out) => {
+          const pCode = out.mCode;
+          if (!materialMap.has(pCode)) {
+            const size = out.sValue || '';
+            const name =
+              `${out.pName} ${out.subCategoryName ? out.subCategoryName.toUpperCase() : ''} ${out.pType || ''} @ ${size}`.trim();
+            materialMap.set(pCode, {
+              code: pCode,
+              name: name,
+              unit: size, // Should be Unit of the FG (e.g. BTL)
+              type: 'OUTPUT',
+            });
+            outputCodes.push(pCode);
+          }
+        });
+
+        // 4. Fetch Actual Usage Data (Inputs: Formula + Packaging)
         const usageData = await this.materialUsageRepo
           .createQueryBuilder('usage')
           .leftJoin('usage.batch', 'batch')
           .leftJoin('batch.formula', 'formula')
           .leftJoin('usage.materialProductCode', 'mpc')
+          .leftJoin('mpc.product', 'mp') // Join Material Product
+          .leftJoin('mpc.category', 'mc') // Join Material Category
+          .leftJoin('mpc.size', 'ms')
           .select([
             "DATE_FORMAT(batch.productionDate, '%Y-%m-%d') as pDate",
             'mpc.productCode as mCode',
+            'mp.name as mName',
+            'mc.name as mCategory',
+            'ms.sizeValue as mSize',
+            'usage.unit as mUnit',
             'SUM(COALESCE(usage.actualQuantity, usage.plannedQuantity)) as totalQty',
           ])
           .where('formula.productId = :pid', { pid: product.id })
@@ -362,10 +458,84 @@ export class ProductionReportsService {
           })
           .groupBy('pDate')
           .addGroupBy('mCode')
+          .addGroupBy('mName')
+          .addGroupBy('mCategory')
+          .addGroupBy('mSize')
+          .addGroupBy('mUnit')
           .getRawMany();
 
-        // 5b. Fetch Actual Concentrate (Batch Output) for this Product + Date Range
-        // FIX: Use DATE_FORMAT here as well
+        const usageMap = new Map<string, Map<string, number>>();
+        usageData.forEach((row: any) => {
+          const dateKey = String(row.pDate);
+          if (!usageMap.has(dateKey)) {
+            usageMap.set(dateKey, new Map());
+          }
+          usageMap.get(dateKey)!.set(row.mCode, Number(row.totalQty));
+
+          // DYNAMIC INSERTION: If code is not in Master Lists, add it securely
+          if (!materialMap.has(row.mCode)) {
+            // Check if it's likely a packaging material
+            // Logic: If Category is 'Barang Kemasan' or similar
+            const isPackaging = row.mCategory === 'Barang Kemasan';
+
+            // Construct Name
+            const size = row.mSize || '';
+            const name = `${row.mName} ${size}`.trim();
+
+            materialMap.set(row.mCode, {
+              code: row.mCode,
+              name: name,
+              unit: row.mUnit || 'PCS',
+              type: isPackaging ? 'PACKAGING' : 'FORMULA', // Default to Formula/Ingredient list if unknown, or Packaging if matching category
+            });
+
+            if (isPackaging) {
+              packagingCodes.push(row.mCode);
+            } else {
+              formulaCodes.push(row.mCode);
+            }
+          } else {
+            // If it exists in map, ensure it's in one of the lists?
+            // It should be, unless logic failure.
+            const type = materialMap.get(row.mCode)?.type;
+            if (type === 'PACKAGING' && !packagingCodes.includes(row.mCode)) {
+              packagingCodes.push(row.mCode);
+            }
+            if (type === 'FORMULA' && !formulaCodes.includes(row.mCode)) {
+              formulaCodes.push(row.mCode);
+            }
+          }
+        });
+
+        // 5. Fetch Output Data (Outputs: Bottling)
+        const outputData = await this.bottlingOutputRepo
+          .createQueryBuilder('output')
+          .leftJoin('output.batch', 'batch')
+          .leftJoin('output.productCode', 'pc')
+          .select([
+            "DATE_FORMAT(batch.productionDate, '%Y-%m-%d') as pDate",
+            'pc.productCode as mCode',
+            'SUM(output.quantity) as totalQty', // Only Good Qty
+          ])
+          .where('batch.productId = :pid', { pid: product.id })
+          .andWhere('batch.productionDate BETWEEN :start AND :end', {
+            start: filter.startDate,
+            end: filter.endDate,
+          })
+          .groupBy('pDate')
+          .addGroupBy('mCode')
+          .getRawMany();
+
+        const outputMap = new Map<string, Map<string, number>>();
+        outputData.forEach((row: any) => {
+          const dateKey = String(row.pDate);
+          if (!outputMap.has(dateKey)) {
+            outputMap.set(dateKey, new Map());
+          }
+          outputMap.get(dateKey)!.set(row.mCode, Number(row.totalQty));
+        });
+
+        // 6. Fetch Total Concentrate (For Product Header)
         const batchData = await this.batchRepo
           .createQueryBuilder('batch')
           .select([
@@ -382,26 +552,14 @@ export class ProductionReportsService {
 
         const concentrateMap = new Map<string, number>();
         batchData.forEach((row: any) => {
-          // pDate is now guaranteed to be a string "YYYY-MM-DD"
-          const dateKey = String(row.pDate);
-          concentrateMap.set(dateKey, Number(row.totalConcentrate));
+          concentrateMap.set(String(row.pDate), Number(row.totalConcentrate));
         });
 
-        // Transform usageData into Map<DateString, Map<MaterialCode, number>>
-        const usageMap = new Map<string, Map<string, number>>(); // Date -> Material -> Qty
-
-        usageData.forEach((row: any) => {
-          const dateKey = String(row.pDate);
-
-          if (!usageMap.has(dateKey)) {
-            usageMap.set(dateKey, new Map());
-          }
-          usageMap.get(dateKey)!.set(row.mCode, Number(row.totalQty));
-        });
-
-        // Skip products with no formula AND no usage AND no concentrate?
+        // Skip if empty (No Formula, No Packaging, No Output, No Usage, No Concentrate)
         if (
-          formulaMaterialCodes.length === 0 &&
+          formulaCodes.length === 0 &&
+          packagingCodes.length === 0 &&
+          outputCodes.length === 0 &&
           usageData.length === 0 &&
           batchData.length === 0
         ) {
@@ -411,10 +569,9 @@ export class ProductionReportsService {
         // -- RENDER PRODUCT HEADER --
         const productRow = sheet.getRow(currentRowIdx);
         productRow.getCell(1).value = productNo;
-        productRow.getCell(2).value = product.id; // Or internal code if available
+        productRow.getCell(2).value = product.id;
         productRow.getCell(3).value = product.name;
 
-        // Styling Yellow for Main Info (No, Code, Name)
         [1, 2, 3, 4].forEach((col) => {
           const cell = productRow.getCell(col);
           cell.fill = {
@@ -446,7 +603,6 @@ export class ProductionReportsService {
             cell.value = '-';
           }
 
-          // Pink Cell for Concentrate
           cell.fill = {
             type: 'pattern',
             pattern: 'solid',
@@ -471,7 +627,7 @@ export class ProductionReportsService {
           type: 'pattern',
           pattern: 'solid',
           fgColor: { argb: 'FFFFC0CB' },
-        }; // Pink
+        };
         prodTotalCell.font = { bold: true };
         prodTotalCell.border = {
           top: { style: 'thin' },
@@ -483,77 +639,113 @@ export class ProductionReportsService {
         currentRowIdx++;
         productNo++;
 
-        // -- RENDER MATERIALS --
-        let materialNo = 1;
+        // Helper to render a list of codes
+        const renderItemList = (codes: string[], groupName?: string) => {
+          // (Optional) Group Header
+          //  if (groupName && codes.length > 0) {
+          //      const grpRow = sheet.getRow(currentRowIdx);
+          //      grpRow.getCell(3).value = groupName;
+          //      grpRow.getCell(3).font = { italic: true, bold: true, color: { argb: 'FF888888'} };
+          //      currentRowIdx++;
+          //  }
 
-        for (const mCode of formulaMaterialCodes) {
-          const matInfo = materialMap.get(mCode);
-          const matRow = sheet.getRow(currentRowIdx);
+          let itemNo = 1;
+          for (const mCode of codes) {
+            const matInfo = materialMap.get(mCode);
+            const matRow = sheet.getRow(currentRowIdx);
 
-          matRow.getCell(1).value = materialNo;
-          matRow.getCell(2).value = mCode;
-          // Format Name Logic
-          let displayName = matInfo?.name;
-          if (matInfo && (matInfo as any).mainCategory === 'Barang Jadi') {
-            const parts = [matInfo.name];
-            if ((matInfo as any).subCategory)
-              parts.push((matInfo as any).subCategory);
-            if (
-              (matInfo as any).productType &&
-              (matInfo as any).productType !== 'SYRUP'
-            ) {
-              parts.push((matInfo as any).productType);
-            }
-            if ((matInfo as any).size) parts.push(`@${(matInfo as any).size}`);
-            displayName = parts.join(' ');
+            matRow.getCell(1).value = itemNo; // Or continue global numbering? Using local 1..n for sub-items usually better
+            matRow.getCell(2).value = mCode;
+            matRow.getCell(3).value = matInfo?.name || mCode;
+            matRow.getCell(4).value = matInfo?.unit;
+
+            let dateColIdx = 5;
+            let rowTotal = 0;
+
+            dates.forEach((dateStr) => {
+              let qty = 0;
+              if (matInfo?.type === 'OUTPUT') {
+                qty = outputMap.get(dateStr)?.get(mCode) || 0;
+              } else {
+                // FORMULA or PACKAGING (Input)
+                qty = usageMap.get(dateStr)?.get(mCode) || 0;
+              }
+
+              if (qty > 0) {
+                matRow.getCell(dateColIdx).value = qty;
+                rowTotal += qty;
+              } else {
+                matRow.getCell(dateColIdx).value = '-';
+              }
+              dateColIdx++;
+            });
+
+            matRow.getCell(dateColIdx).value = rowTotal;
+            matRow.getCell(dateColIdx).font = { bold: true };
+
+            // Borders & Input/Output specific styling
+            matRow.eachCell((cell, colNumber) => {
+              if (colNumber <= 4 + dates.length + 1) {
+                cell.border = {
+                  top: { style: 'dotted' },
+                  left: { style: 'thin' },
+                  right: { style: 'thin' },
+                  bottom: { style: 'dotted' },
+                };
+                cell.alignment = {
+                  vertical: 'middle',
+                  horizontal: colNumber > 4 ? 'center' : 'left',
+                };
+
+                if (matInfo?.type === 'OUTPUT') {
+                  // Highlight Finished Goods Output
+                  cell.font = {
+                    color: { argb: 'FF0000FF' },
+                    bold: colNumber > 4,
+                  }; // Blue text for output
+                }
+
+                if (colNumber === 1 || colNumber === 4)
+                  cell.alignment.horizontal = 'center';
+              }
+            });
+
+            currentRowIdx++;
+            itemNo++;
           }
+        };
 
-          matRow.getCell(3).value = displayName;
-          matRow.getCell(4).value = matInfo?.unit;
+        // 1. Render Formula Materials
+        renderItemList(formulaCodes);
 
-          let dateColIdx = 5;
-          let rowTotal = 0;
-
-          dates.forEach((dateStr) => {
-            const dayUsage = usageMap.get(dateStr)?.get(mCode) || 0;
-            if (dayUsage > 0) {
-              matRow.getCell(dateColIdx).value = dayUsage;
-              rowTotal += dayUsage;
-            } else {
-              matRow.getCell(dateColIdx).value = '-';
-            }
-            dateColIdx++;
-          });
-
-          matRow.getCell(dateColIdx).value = rowTotal; // Total column
-          matRow.getCell(dateColIdx).font = { bold: true };
-
-          // Borders
-          matRow.eachCell((cell, colNumber) => {
-            if (colNumber <= 4 + dates.length + 1) {
-              cell.border = {
-                top: { style: 'dotted' },
-                left: { style: 'thin' },
-                right: { style: 'thin' },
-                bottom: { style: 'dotted' },
-              };
-              cell.alignment = {
-                vertical: 'middle',
-                horizontal: colNumber > 4 ? 'center' : 'left',
-              };
-              if (colNumber === 1 || colNumber === 4)
-                cell.alignment.horizontal = 'center';
-            }
-          });
-
+        // 2. Render Packaging Materials
+        if (packagingCodes.length > 0) {
+          const sepRow = sheet.getRow(currentRowIdx);
+          sepRow.getCell(3).value = 'Barang Kemasan';
+          sepRow.getCell(3).font = { bold: true, italic: true };
           currentRowIdx++;
-          materialNo++;
+          renderItemList(packagingCodes);
+        }
+
+        // 3. Render Output Materials
+        if (outputCodes.length > 0) {
+          const sepRow = sheet.getRow(currentRowIdx);
+          sepRow.getCell(3).value = 'Barang Jadi Hasil Produksi';
+          sepRow.getCell(3).font = {
+            bold: true,
+            italic: true,
+            color: { argb: 'FF0000FF' },
+          };
+          currentRowIdx++;
+          renderItemList(outputCodes);
         }
 
         // Gap Row
         currentRowIdx++;
       } // End Products Loop
     } // End SubCategories Loop
+
+    // ... (Remainder of Barang Baku Sheet Logic - omitted for brevity, keeping existing if possible or replacing entire file)
 
     // ==================== BARANG BAKU SHEET ====================
     // Add sheet for Barang Baku products with canBeProduced=true

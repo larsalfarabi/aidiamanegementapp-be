@@ -133,7 +133,7 @@ export class ProductionBatches extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     comment:
       'Planned quantity (concentrate volume for multi-size, bottles for single-size)',
   })
@@ -142,7 +142,7 @@ export class ProductionBatches extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     nullable: true,
     comment: 'Planned concentrate output in liters',
   })
@@ -152,7 +152,7 @@ export class ProductionBatches extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     default: 0,
     comment: 'Actual concentrate produced (in liters)',
   })
@@ -161,7 +161,7 @@ export class ProductionBatches extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     default: 0,
     comment: 'Actual quantity produced (after bottling)',
   })
@@ -170,7 +170,7 @@ export class ProductionBatches extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     default: 0,
     comment: 'Quantity that passed QC',
   })
@@ -179,7 +179,7 @@ export class ProductionBatches extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     default: 0,
     comment: 'Quantity that failed QC',
   })
@@ -188,7 +188,7 @@ export class ProductionBatches extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     default: 0,
     comment: 'Total waste quantity (planned - actual)',
   })

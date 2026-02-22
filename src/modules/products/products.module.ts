@@ -6,6 +6,7 @@ import { Products } from './entity/products.entity';
 import { ProductCategories } from './entity/product_categories.entity';
 import { ProductSizes } from './entity/product_sizes.entity';
 import { ProductCodes } from './entity/product_codes.entity';
+import { ProductPackagingMaterial } from './entity/product-packaging-material.entity';
 import { CategoryHierarchyService } from './services/category-hierarchy.service';
 import { Users } from '../users/entities/users.entity';
 import { RedisModule } from '../redis/redis.module';
@@ -18,7 +19,9 @@ import { NotificationsModule } from '../notifications/notifications.module';
       Products,
       ProductCategories,
       ProductSizes,
+      ProductSizes,
       ProductCodes,
+      ProductPackagingMaterial,
       Users,
     ]),
     RedisModule,

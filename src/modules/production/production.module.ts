@@ -10,6 +10,7 @@ import {
   ProductionStageTracking,
   ProductionBottlingOutput,
 } from './entities';
+import { ProductPackagingMaterial } from '../products/entity/product-packaging-material.entity';
 import { ProductCodes } from '../products/entity/product_codes.entity';
 import { Products } from '../products/entity/products.entity';
 import { ProductCategories } from '../products/entity/product_categories.entity';
@@ -32,6 +33,8 @@ import { NotificationsModule } from '../notifications/notifications.module';
       ProductCodes,
       Products, // NEW: Product concept entity
       ProductCategories,
+      ProductCategories,
+      ProductPackagingMaterial, // NEW: Packaging BOM
       InventoryTransactions,
       Users,
     ]),

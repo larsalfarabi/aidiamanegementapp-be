@@ -1,7 +1,8 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { OrdersController } from './orders.controller';
 import { OrdersService } from './orders.service';
+import { OrderInventoryCronService } from './services/order-inventory-cron.service';
 import { Orders } from './entity/orders.entity';
 import { OrderItems } from './entity/order_items.entity';
 import { Customers } from '../customers/entity/customers.entity';
@@ -23,12 +24,12 @@ import { NotificationsModule } from '../notifications/notifications.module';
       ProductCodes,
       Users,
     ]),
-    InventoryModule,
+    forwardRef(() => InventoryModule),
     RedisModule,
     NotificationsModule, // ✅ Import to access NotificationEventEmitter
   ],
   controllers: [OrdersController],
-  providers: [OrdersService, PermissionGuard],
-  exports: [OrdersService],
+  providers: [OrdersService, OrderInventoryCronService, PermissionGuard],
+  exports: [OrdersService, OrderInventoryCronService],
 })
 export class OrdersModule {}

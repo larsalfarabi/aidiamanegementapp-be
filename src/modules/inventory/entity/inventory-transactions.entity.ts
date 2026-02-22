@@ -125,7 +125,7 @@ export class InventoryTransactions {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     comment: 'Quantity (positive for IN, negative for OUT)',
   })
   quantity: number;
@@ -133,7 +133,7 @@ export class InventoryTransactions {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     comment: 'Stock balance after transaction (for verification)',
   })
   balanceAfter: number;

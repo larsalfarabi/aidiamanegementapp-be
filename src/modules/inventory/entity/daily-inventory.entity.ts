@@ -48,7 +48,7 @@ export class DailyInventory extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     default: 0,
     comment: 'Opening stock (carried forward from previous day)',
   })
@@ -57,7 +57,7 @@ export class DailyInventory extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     default: 0,
     comment: 'Goods in (production, repack-in, sample-return)',
   })
@@ -66,7 +66,7 @@ export class DailyInventory extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     default: 0,
     comment: 'Orders with invoice date = today (auto from orders)',
   })
@@ -75,7 +75,7 @@ export class DailyInventory extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     default: 0,
     comment: 'Goods out for repacking (e.g., 4x 250ML to make 1x 1000ML)',
   })
@@ -84,7 +84,7 @@ export class DailyInventory extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     default: 0,
     comment: 'Goods out as samples (promotion, demo, quality test)',
   })
@@ -93,7 +93,7 @@ export class DailyInventory extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     default: 0,
     comment: 'Goods out for production (material consumption)',
   })
@@ -110,7 +110,7 @@ export class DailyInventory extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     generatedType: 'STORED',
     asExpression:
       '(stokAwal + barangMasuk - dipesan - barangOutRepack - barangOutSample - barangOutProduksi)',
@@ -126,7 +126,7 @@ export class DailyInventory extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     nullable: true,
     comment: 'Minimum stock level for production planning',
   })
@@ -135,7 +135,7 @@ export class DailyInventory extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     nullable: true,
     comment: 'Maximum stock capacity',
   })

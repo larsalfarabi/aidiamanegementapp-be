@@ -12,11 +12,13 @@ import { ProductionReportsService } from './production/production-reports.servic
 import {
   ProductionMaterialUsage,
   ProductionBatches,
+  ProductionBottlingOutput,
 } from '../production/entities';
 import { ProductCategories } from '../products/entity/product_categories.entity';
 import { Products } from '../products/entity/products.entity';
 import { ProductCodes } from '../products/entity/product_codes.entity';
 import { ProductionFormulas, FormulaMaterials } from '../production/entities';
+import { ProductPackagingMaterial } from '../products/entity/product-packaging-material.entity';
 
 @Module({
   imports: [
@@ -31,6 +33,8 @@ import { ProductionFormulas, FormulaMaterials } from '../production/entities';
       ProductionFormulas,
       FormulaMaterials,
       ProductionBatches,
+      ProductPackagingMaterial,
+      ProductionBottlingOutput,
     ]),
     RedisModule,
   ],

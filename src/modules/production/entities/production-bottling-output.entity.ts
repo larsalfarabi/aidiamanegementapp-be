@@ -68,7 +68,7 @@ export class ProductionBottlingOutput extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 12,
-    scale: 3,
+    scale: 4,
     comment: 'Good output quantity for this size (in bottles/units)',
   })
   quantity: number;
@@ -76,7 +76,7 @@ export class ProductionBottlingOutput extends BaseEntity {
   @Column({
     type: 'decimal',
     precision: 12,
-    scale: 3,
+    scale: 4,
     default: 0,
     comment: 'Waste quantity for this size (in bottles/units)',
   })

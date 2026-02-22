@@ -20,6 +20,7 @@ import { InventoryTransactionService } from './services/inventory-transaction.se
 import { TransactionReportService } from './services/transaction-report.service';
 import { ExcelExportService } from './services/excel-export.service';
 import { StockOpnameService } from './services/stock-opname.service';
+import { OrderInventoryCronService } from '../orders/services/order-inventory-cron.service';
 import { JwtGuard } from '../auth/guards/auth.guard';
 import { PermissionGuard } from '../auth/guards/permission.guard';
 import { RequirePermissions } from '../../common/decorator/permission.decorator';
@@ -59,6 +60,7 @@ export class InventoryController {
     private readonly reportService: TransactionReportService,
     private readonly excelExportService: ExcelExportService,
     private readonly stockOpnameService: StockOpnameService,
+    private readonly orderInventoryCron: OrderInventoryCronService,
   ) {}
 
   /**
@@ -488,7 +490,21 @@ export class InventoryController {
   @Post('admin/trigger-reset')
   @HttpCode(HttpStatus.OK)
   async triggerDailyReset() {
-    return this.dailyResetService.triggerManualReset();
+    // Step 1: Run daily inventory reset
+    const resetResult = await this.dailyResetService.triggerManualReset();
+
+    // Step 2: Process future-dated orders whose invoiceDate = today
+    let futureOrdersResult = null;
+    try {
+      futureOrdersResult = await this.orderInventoryCron.processOrders();
+    } catch (error) {
+      futureOrdersResult = { error: error.message };
+    }
+
+    return {
+      ...resetResult,
+      futureOrders: futureOrdersResult,
+    };
   }
 
   /**

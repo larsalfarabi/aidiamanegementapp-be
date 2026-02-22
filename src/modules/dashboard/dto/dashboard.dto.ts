@@ -191,3 +191,19 @@ export class ActiveCustomersByTypeDto {
   })
   total: number;
 }
+
+export class AvailableMonthDto {
+  @ApiProperty()
+  year: number;
+
+  @ApiProperty()
+  month: number;
+}
+
+export class DashboardFilterDto {
+  @ApiProperty({ required: false })
+  month?: number;
+
+  @ApiProperty({ required: false })
+  year?: number;
+}

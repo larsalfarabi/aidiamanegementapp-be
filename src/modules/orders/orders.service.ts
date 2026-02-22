@@ -25,6 +25,10 @@ import {
 import { InvoiceNumberGenerator } from './utils/invoice-number-generator';
 import { DeleteOrderDto } from './dto/orders.dto';
 import { InventoryTransactionService } from '../inventory/services/inventory-transaction.service';
+import {
+  getJakartaDate,
+  getJakartaDateString,
+} from '../../common/utils/date.util';
 
 @Injectable()
 export class OrdersService extends BaseResponse {
@@ -53,8 +57,7 @@ export class OrdersService extends BaseResponse {
    * @param manager - EntityManager from active transaction (required for pessimistic lock)
    */
   private async generateOrderNumber(manager: any): Promise<string> {
-    const today = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const dateStr = getJakartaDateString().replace(/-/g, '');
 
     const lastOrder = await manager
       .createQueryBuilder(Orders, 'order')
@@ -203,7 +206,7 @@ export class OrdersService extends BaseResponse {
 
         // Date Validation (Logging only)
         if (customerCatalog.effectiveDate || customerCatalog.expiryDate) {
-          const now = new Date();
+          const now = getJakartaDate();
           now.setHours(0, 0, 0, 0);
 
           if (
@@ -317,7 +320,7 @@ export class OrdersService extends BaseResponse {
       // ✅ Handle order date (default to today)
       const orderDate = createOrderDto.orderDate
         ? new Date(createOrderDto.orderDate)
-        : new Date();
+        : getJakartaDate();
 
       // ✅ Handle invoice date (allow backdate and future dates, default to order date)
       const invoiceDate = createOrderDto.invoiceDate
@@ -402,7 +405,7 @@ export class OrdersService extends BaseResponse {
       }
 
       // ✅ Check if invoice date is today OR in the past (Backdate or Same-Day)
-      const today = new Date();
+      const today = getJakartaDate();
       today.setHours(0, 0, 0, 0);
       const invoiceDateOnly = new Date(invoiceDate);
       invoiceDateOnly.setHours(0, 0, 0, 0);
@@ -442,10 +445,22 @@ export class OrdersService extends BaseResponse {
             );
           }
         }
+
+        // ✅ Mark inventory as deducted
+        savedOrder.inventoryDeducted = true;
+        await queryRunner.manager.update(Orders, savedOrder.id, {
+          inventoryDeducted: true,
+        });
       } else {
         this.logger.log(
           `[ORDER ${orderNumber}] Future-dated order (invoice: ${invoiceDate.toISOString().split('T')[0]}) - skipping inventory transaction until that date`,
         );
+
+        // ✅ Mark inventory as NOT deducted — cron job will process on invoice date
+        savedOrder.inventoryDeducted = false;
+        await queryRunner.manager.update(Orders, savedOrder.id, {
+          inventoryDeducted: false,
+        });
       }
 
       // ✅ Commit Transaction
@@ -661,7 +676,7 @@ export class OrdersService extends BaseResponse {
     }
 
     // Validasi tanggal invoice
-    const today = new Date();
+    const today = getJakartaDate();
     today.setHours(0, 0, 0, 0);
 
     const invoiceDate = new Date(orderCheck.invoiceDate);
@@ -690,8 +705,7 @@ export class OrdersService extends BaseResponse {
     }
 
     // ✅ Reverse inventory transactions for each order item
-    // This decrements daily_inventory.dipesan and creates cancellation audit trail
-    // BUT only for same-day orders (where inventory was already reserved)
+    // Only reverse if inventory was actually deducted (flag-based, not date-based)
     const userId =
       typeof payload.deletedBy === 'object'
         ? payload.deletedBy.id
@@ -701,21 +715,15 @@ export class OrdersService extends BaseResponse {
       throw new BadRequestException('deletedBy user ID is required');
     }
 
-    // ✅ Check if invoice date is today OR in the past - reusable logic
-    const invoiceDateOnly = new Date(order.invoiceDate);
-    invoiceDateOnly.setHours(0, 0, 0, 0);
-
-    const isEffectiveTransaction = invoiceDateOnly.getTime() <= today.getTime();
-
-    // ✅ DETAILED LOGGING for debugging
+    // ✅ Use inventoryDeducted flag instead of date comparison
     this.logger.log(
-      `[ORDER DELETE ${order.orderNumber}] Invoice Date: ${invoiceDateOnly.toISOString()}, Today: ${today.toISOString()}, isEffectiveTransaction: ${isEffectiveTransaction}`,
+      `[ORDER DELETE ${order.orderNumber}] inventoryDeducted: ${order.inventoryDeducted}`,
     );
 
-    if (isEffectiveTransaction) {
-      // ✅ EFFECTIVE ORDER: Reverse inventory transaction (Same day or Backdated)
+    if (order.inventoryDeducted) {
+      // ✅ DEDUCTED ORDER: Reverse inventory transaction
       this.logger.log(
-        `[ORDER ${order.orderNumber}] Effective order - reversing inventory transactions for ${order.orderItems.length} items`,
+        `[ORDER ${order.orderNumber}] Inventory was deducted - reversing ${order.orderItems.length} items`,
       );
 
       for (const orderItem of order.orderItems) {
@@ -747,9 +755,9 @@ export class OrdersService extends BaseResponse {
         }
       }
     } else {
-      // ✅ FUTURE-DATED ORDER: No need to reverse (was never reserved)
+      // ✅ NOT DEDUCTED: No need to reverse (future-dated, never processed by cron)
       this.logger.log(
-        `[ORDER ${order.orderNumber}] Future-dated order (invoice: ${invoiceDateOnly.toISOString()}) - no inventory reversal needed`,
+        `[ORDER ${order.orderNumber}] Inventory not yet deducted - no reversal needed`,
       );
     }
 
@@ -799,40 +807,39 @@ export class OrdersService extends BaseResponse {
       }
 
       // 2. Validation for editing orders
-      // - Same-day orders: can edit freely
-      // - Past orders: can only update if NEW invoice date >= today
-      const today = new Date();
+      // ✅ Allow backdate invoice date (same rules as create order)
+      // Limit: new invoice date must be within 30 days from today
+      const today = getJakartaDate();
       today.setHours(0, 0, 0, 0);
 
       const currentInvoiceDate = new Date(existingOrder.invoiceDate);
       currentInvoiceDate.setHours(0, 0, 0, 0);
 
-      const isOriginalPast = currentInvoiceDate < today;
-
-      // Calculate days difference for 30-day limit
-      const daysDiff = Math.floor(
-        (today.getTime() - currentInvoiceDate.getTime()) /
-          (1000 * 60 * 60 * 24),
-      );
-
-      // Validation: Backdate orders older than 30 days cannot be updated
-      if (daysDiff > 30) {
-        throw new BadRequestException(
-          `Order dengan invoice lebih dari 30 hari yang lalu tidak dapat diperbarui. Invoice date: ${currentInvoiceDate.toLocaleDateString('id-ID')} (${daysDiff} hari yang lalu)`,
-        );
-      }
-
-      // Parse new invoice date from DTO - for backdate updates, keep the original date
-      // Users can only change order items, not the invoice date
+      // Parse new invoice date from DTO
       const newInvoiceDateFromDto = updateOrderDto.invoiceDate
         ? new Date(updateOrderDto.invoiceDate)
         : currentInvoiceDate;
       newInvoiceDateFromDto.setHours(0, 0, 0, 0);
 
+      // Validate: new invoice date must not be older than 30 days from ORDER DATE
+      const orderDateOnly = new Date(existingOrder.orderDate);
+      orderDateOnly.setHours(0, 0, 0, 0);
+
+      const thirtyDaysBeforeOrder = new Date(orderDateOnly);
+      thirtyDaysBeforeOrder.setDate(thirtyDaysBeforeOrder.getDate() - 30);
+
+      if (newInvoiceDateFromDto < thirtyDaysBeforeOrder) {
+        throw new BadRequestException(
+          `Tanggal invoice tidak boleh lebih dari 30 hari sebelum tanggal pesanan (${orderDateOnly.toLocaleDateString('id-ID')}). Tanggal yang dipilih: ${newInvoiceDateFromDto.toLocaleDateString('id-ID')}`,
+        );
+      }
+
+      const isOriginalPast = currentInvoiceDate < today;
+
       // Log backdate update attempt
-      if (isOriginalPast) {
+      if (isOriginalPast || newInvoiceDateFromDto < today) {
         this.logger.log(
-          `[ORDER UPDATE ${existingOrder.orderNumber}] Backdate order detected (${currentInvoiceDate.toLocaleDateString('id-ID')}, ${daysDiff} days ago). Allowing update with propagation.`,
+          `[ORDER UPDATE ${existingOrder.orderNumber}] Backdate edit: current invoice ${currentInvoiceDate.toLocaleDateString('id-ID')}, new invoice ${newInvoiceDateFromDto.toLocaleDateString('id-ID')}. Allowing with propagation.`,
         );
       }
 
@@ -878,6 +885,10 @@ export class OrdersService extends BaseResponse {
         existingOrder.orderDate = new Date(updateOrderDto.orderDate);
       }
 
+      // ✅ Save original invoice date BEFORE mutation (needed for inventory reversal in step 5)
+      const savedOriginalInvoiceDate = new Date(existingOrder.invoiceDate);
+      savedOriginalInvoiceDate.setHours(0, 0, 0, 0);
+
       // 4. Handle Invoice Date Change
       if (updateOrderDto.invoiceDate) {
         const newInvoiceDate = new Date(updateOrderDto.invoiceDate);
@@ -892,11 +903,21 @@ export class OrdersService extends BaseResponse {
             newInvoiceDate.getMonth() !== oldInvoiceDate.getMonth() ||
             newInvoiceDate.getFullYear() !== oldInvoiceDate.getFullYear()
           ) {
+            // ✅ Save old invoice number for traceability (Option B)
+            existingOrder.previousInvoiceNumber = existingOrder.invoiceNumber;
+            this.logger.log(
+              `[ORDER UPDATE ${existingOrder.orderNumber}] Invoice month changed: ${oldInvoiceDate.toLocaleDateString('id-ID')} → ${newInvoiceDate.toLocaleDateString('id-ID')}. Old invoice: ${existingOrder.previousInvoiceNumber}`,
+            );
+
             const newInvoiceNumber = await this.generateInvoiceNumber(
               newInvoiceDate,
               queryRunner.manager,
             );
             existingOrder.invoiceNumber = newInvoiceNumber;
+
+            this.logger.log(
+              `[ORDER UPDATE ${existingOrder.orderNumber}] New invoice number: ${newInvoiceNumber}`,
+            );
           }
         }
       }
@@ -913,7 +934,7 @@ export class OrdersService extends BaseResponse {
 
       // ✅ FIX: Use local timezone for date comparison
       // Create dates using local timezone parts to avoid UTC issues
-      const todayLocal = new Date();
+      const todayLocal = getJakartaDate();
       const todayMidnight = new Date(
         todayLocal.getFullYear(),
         todayLocal.getMonth(),
@@ -924,28 +945,22 @@ export class OrdersService extends BaseResponse {
         0,
       );
 
-      const originalInvoiceLocal = new Date(existingOrder.invoiceDate);
-      const originalInvoiceMidnight = new Date(
-        originalInvoiceLocal.getFullYear(),
-        originalInvoiceLocal.getMonth(),
-        originalInvoiceLocal.getDate(),
-        0,
-        0,
-        0,
-        0,
-      );
+      // ✅ FIX: Use the SAVED original invoice date (before step 4 mutated it)
+      const originalInvoiceMidnight = savedOriginalInvoiceDate;
 
-      // ✅ FIX: Use isOriginalPast flag that was calculated BEFORE invoice date was updated
-      // For both same-day and past orders, we now use the backdate-aware reversal
-      // that properly updates inventory at the original date and propagates
+      // ✅ FIX: Use inventoryDeducted flag instead of date comparison
+      // Only reverse if inventory was actually deducted
 
       this.logger.log(
-        `[ORDER UPDATE ${existingOrder.orderNumber}] Today: ${todayMidnight.toISOString()}, isOriginalPast: ${isOriginalPast}`,
+        `[ORDER UPDATE ${existingOrder.orderNumber}] Today: ${todayMidnight.toISOString()}, inventoryDeducted: ${existingOrder.inventoryDeducted}`,
       );
 
-      // 5. Reverse old inventory transactions using backdate-aware method
-      // This works for both same-day and past orders with proper propagation
-      if (existingOrder.orderItems && existingOrder.orderItems.length > 0) {
+      // 5. Reverse old inventory transactions ONLY if inventory was deducted
+      if (
+        existingOrder.inventoryDeducted &&
+        existingOrder.orderItems &&
+        existingOrder.orderItems.length > 0
+      ) {
         this.logger.log(
           `[ORDER UPDATE ${existingOrder.orderNumber}] Reversing ${existingOrder.orderItems.length} old items inventory at date ${originalInvoiceMidnight.toLocaleDateString('id-ID')}`,
         );
@@ -971,6 +986,10 @@ export class OrdersService extends BaseResponse {
             );
           }
         }
+      } else if (!existingOrder.inventoryDeducted) {
+        this.logger.log(
+          `[ORDER UPDATE ${existingOrder.orderNumber}] Inventory not yet deducted - no reversal needed`,
+        );
       }
 
       // 6. Delete old order items
@@ -1052,10 +1071,20 @@ export class OrdersService extends BaseResponse {
             );
           }
         }
+
+        // ✅ Mark inventory as deducted
+        await queryRunner.manager.update(Orders, id, {
+          inventoryDeducted: true,
+        });
       } else {
         this.logger.log(
           `[ORDER UPDATE ${existingOrder.orderNumber}] No inventory recording needed (future date)`,
         );
+
+        // ✅ Mark inventory as NOT deducted — cron job will process on invoice date
+        await queryRunner.manager.update(Orders, id, {
+          inventoryDeducted: false,
+        });
       }
 
       // 11. Commit Transaction
