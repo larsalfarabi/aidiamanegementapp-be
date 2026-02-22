@@ -19,6 +19,7 @@ import {
   ProductionSummaryDto,
   LowStockSummaryDto,
   ActiveCustomersByTypeDto,
+  AvailableMonthDto,
 } from './dto/dashboard.dto';
 import * as dayjs from 'dayjs';
 import * as relativeTime from 'dayjs/plugin/relativeTime';
@@ -42,18 +43,85 @@ export class DashboardService {
     private readonly productionBatchesRepository: Repository<ProductionBatches>,
   ) {}
 
-  async getSalesChartData(): Promise<SalesChartDto[]> {
-    const months = 12;
-    const endDate = dayjs();
-    const startDate = dayjs()
-      .subtract(months - 1, 'month')
-      .startOf('month');
+  /**
+   * Get available months for dashboard filter based on existing orders
+   * Uses simple GROUP BY to be efficient.
+   */
+  async getAvailableMonths(): Promise<AvailableMonthDto[]> {
+    const dates = await this.ordersRepository
+      .createQueryBuilder('order')
+      .select('YEAR(order.orderDate)', 'year')
+      .addSelect('MONTH(order.orderDate)', 'month')
+      .where('order.isDeleted IS NULL OR order.isDeleted = :isDeleted', {
+        isDeleted: false,
+      })
+      .groupBy('year, month')
+      .orderBy('year', 'DESC')
+      .addOrderBy('month', 'DESC')
+      .getRawMany();
 
+    return dates.map((d) => ({
+      year: Number(d.year),
+      month: Number(d.month),
+    }));
+  }
+
+  /**
+   * Helper to get start and end dates for a filter
+   * If year/month provided, returns start/end of that month
+   * If not, returns start/end of current month
+   */
+  private getDateRange(year?: number, month?: number) {
+    let start: dayjs.Dayjs;
+    let end: dayjs.Dayjs;
+
+    if (year && month) {
+      // Month is 1-indexed in UI usually, dayjs takes 0-11
+      // We assume input is 1-12
+      start = dayjs()
+        .year(year)
+        .month(month - 1)
+        .startOf('month');
+      end = start.endOf('month');
+    } else {
+      start = dayjs().startOf('month');
+      end = dayjs().endOf('month');
+    }
+
+    return {
+      start: start.toDate(), // Date object for TypeORM
+      end: end.toDate(),
+      startStr: start.format('YYYY-MM-DD'),
+      endStr: end.format('YYYY-MM-DD'),
+      startDayjs: start,
+    };
+  }
+
+  async getSalesChartData(
+    year?: number,
+    month?: number,
+  ): Promise<SalesChartDto[]> {
+    // If specific month selected, show context ending at that month
+    // Default: 12 months ending now
+
+    let endDate = dayjs();
+    if (year && month) {
+      endDate = dayjs()
+        .year(year)
+        .month(month - 1)
+        .endOf('month');
+    }
+
+    const months = 12;
+    const startDate = endDate.subtract(months - 1, 'month').startOf('month');
+
+    // Opt for Range Query (Index Friendly)
     const salesData = await this.ordersRepository
       .createQueryBuilder('order')
       .select("DATE_FORMAT(order.orderDate, '%Y-%m')", 'month')
       .addSelect('SUM(order.grandTotal)', 'total')
       .where('order.orderDate >= :startDate', { startDate: startDate.toDate() })
+      .andWhere('order.orderDate <= :endDate', { endDate: endDate.toDate() })
       .andWhere('order.isDeleted IS NULL OR order.isDeleted = :isDeleted', {
         isDeleted: false,
       })
@@ -80,42 +148,23 @@ export class DashboardService {
     return result;
   }
 
-  async getStats(): Promise<DashboardStatsDto> {
-    const today = dayjs().format('YYYY-MM-DD');
-
-    // Revenue today
-    const revenueResult = await this.ordersRepository
-      .createQueryBuilder('order')
-      .select('SUM(order.grandTotal)', 'total')
-      .where('DATE(order.orderDate) = :today', { today })
-      .andWhere('order.isDeleted IS NULL OR order.isDeleted = :isDeleted', {
-        isDeleted: false,
-      })
-      .getRawOne();
-
-    // New Orders today
-    const newOrders = await this.ordersRepository.count({
-      where: {
-        orderDate: dayjs(today).toDate() as any,
-        isDeleted: false,
-      } as any,
-    });
-
-    // Active Customers
-    const activeCustomers = await this.customersRepository.count({
-      where: { isActive: true },
-    });
-
+  async getStats(year?: number, month?: number): Promise<DashboardStatsDto> {
+    // Legacy support or alias
+    const statsV2 = await this.getStatsV2(year, month);
     return {
-      todayRevenue: Number(revenueResult?.total || 0),
-      newOrders: newOrders,
-      lowStock: 0, // Placeholder
-      activeCustomers: activeCustomers,
+      todayRevenue: statsV2.todayRevenue,
+      newOrders: statsV2.todayOrders,
+      lowStock: statsV2.lowStockCount,
+      activeCustomers: statsV2.newCustomersThisMonth, // Mapping approximate
     };
   }
 
-  async getTopProducts(limit: number): Promise<TopProductDto[]> {
-    const today = dayjs().format('YYYY-MM-DD');
+  async getTopProducts(
+    limit: number,
+    year?: number,
+    month?: number,
+  ): Promise<TopProductDto[]> {
+    const { start, end, endStr } = this.getDateRange(year, month);
 
     const topItems = await this.orderItemsRepository
       .createQueryBuilder('item')
@@ -125,16 +174,7 @@ export class DashboardService {
       .addSelect('COALESCE(inv.stokAkhir, 0)', 'stock')
       .addSelect('SUM(item.quantity)', 'sold')
       .addSelect('SUM(item.lineTotal)', 'revenue')
-
-      // Joins using Table Names (because entities might be loosely coupled in this context or to ensure raw speed)
-      // Note: Using entity names in leftJoin matches TypeORM convention if mapped, but here using RAW table names for clarity in raw select, OR using relation property paths
-      // Since we don't have direct relations injected in OrderItems for deep nesting, we use direct table joins or entity aliases if repositories are unavailable
-      // Better: Use leftJoin with Entity Class if possible, or relation path.
-      // Relations: item -> productCode (ProductCodes) -> product (Products) -> category (ProductCategories)
-      // But OrderItems doesn't have deep eager loading defined here easily.
-      // Using Raw Table Joins via leftJoin (referencing entity via string name if registered, or table name)
-      // TypeORM .leftJoin('product_codes', 'pc', 'pc.id = item.productCodeId') works if 'product_codes' is table name.
-
+      .leftJoin('orders', 'o', 'o.id = item.orderId') // Need to join orders to filter by date
       .leftJoin('product_codes', 'pc', 'pc.id = item.productCodeId')
       .leftJoin('products', 'p', 'p.id = pc.productId')
       .leftJoin('product_categories', 'cat', 'cat.id = p.categoryId')
@@ -142,8 +182,13 @@ export class DashboardService {
         'daily_inventory',
         'inv',
         'inv.productCodeId = item.productCodeId AND inv.businessDate = :today',
-        { today },
+        { today: endStr }, // Use end date of period for stock reference logic
       )
+      .where('o.orderDate >= :startDate', { startDate: start })
+      .andWhere('o.orderDate <= :endDate', { endDate: end })
+      .andWhere('o.isDeleted IS NULL OR o.isDeleted = :isDeleted', {
+        isDeleted: false,
+      })
 
       .groupBy('item.productCodeId')
       .addGroupBy('item.productName')
@@ -165,10 +210,12 @@ export class DashboardService {
   }
 
   async getRecentActivities(limit: number): Promise<RecentActivityDto[]> {
+    // Activities usually just show latest, regardless of filter (unless specifically requested to filter logs)
+    // Decision: Keep it global (Latest) unless explicitly requested.
     const recentOrders = await this.ordersRepository.find({
       order: { createdAt: 'DESC' } as any,
       take: limit,
-      relations: ['updatedBy'], // Use updatedBy/createdBy
+      relations: ['updatedBy'],
     });
 
     return recentOrders.map((order) => ({
@@ -190,17 +237,30 @@ export class DashboardService {
   // Dashboard V2 Methods - Enhanced Stats
   // ============================================
 
-  async getStatsV2(): Promise<DashboardStatsV2Dto> {
-    const today = dayjs().format('YYYY-MM-DD');
-    const yesterday = dayjs().subtract(1, 'day').format('YYYY-MM-DD');
-    const startOfMonth = dayjs().startOf('month').format('YYYY-MM-DD');
+  async getStatsV2(
+    year?: number,
+    month?: number,
+  ): Promise<DashboardStatsV2Dto> {
+    const { startDayjs, start, end } = this.getDateRange(year, month);
+
+    const isCurrentMonth = dayjs().isSame(startDayjs, 'month');
+    const targetDay = isCurrentMonth
+      ? dayjs()
+      : startDayjs.endOf('month').startOf('day'); // Last day of past month
+
+    // Range for "Day" queries
+    const todayStart = targetDay.toDate();
+    const todayEnd = targetDay.endOf('day').toDate();
+    const yesterdayStart = targetDay.subtract(1, 'day').toDate();
+    const yesterdayEnd = targetDay.subtract(1, 'day').endOf('day').toDate();
 
     try {
-      // Today's revenue
+      // Today's revenue (Optimized Index Usage)
       const todayRevenueResult = await this.ordersRepository
         .createQueryBuilder('order')
         .select('SUM(order.grandTotal)', 'total')
-        .where('DATE(order.orderDate) = :today', { today })
+        .where('order.orderDate >= :start', { start: todayStart })
+        .andWhere('order.orderDate < :end', { end: todayEnd }) // Less than next day
         .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
           isDeleted: false,
         })
@@ -210,7 +270,8 @@ export class DashboardService {
       const yesterdayRevenueResult = await this.ordersRepository
         .createQueryBuilder('order')
         .select('SUM(order.grandTotal)', 'total')
-        .where('DATE(order.orderDate) = :yesterday', { yesterday })
+        .where('order.orderDate >= :start', { start: yesterdayStart })
+        .andWhere('order.orderDate < :end', { end: yesterdayEnd })
         .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
           isDeleted: false,
         })
@@ -226,17 +287,19 @@ export class DashboardService {
       // Today's orders count
       const todayOrdersResult = await this.ordersRepository
         .createQueryBuilder('order')
-        .where('DATE(order.orderDate) = :today', { today })
+        .where('order.orderDate >= :start', { start: todayStart })
+        .andWhere('order.orderDate < :end', { end: todayEnd })
         .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
           isDeleted: false,
         })
         .getCount();
 
-      // Monthly revenue (this month)
+      // Monthly revenue (Selected Month)
       const monthlyRevenueResult = await this.ordersRepository
         .createQueryBuilder('order')
         .select('SUM(order.grandTotal)', 'total')
-        .where('DATE(order.orderDate) >= :startOfMonth', { startOfMonth })
+        .where('order.orderDate >= :start', { start })
+        .andWhere('order.orderDate <= :end', { end })
         .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
           isDeleted: false,
         })
@@ -244,23 +307,29 @@ export class DashboardService {
 
       const monthlyRevenue = Number(monthlyRevenueResult?.total || 0);
 
-      // Low stock count - Try to get from daily inventory, fallback to 0
+      // Low stock count - Current State (Snapshot)
+      // Historical low stock is hard to reconstruct. Showing CURRENT low stock is safer.
       let lowStockResult = 0;
+      const checkDate = dayjs().format('YYYY-MM-DD'); // Always check current
       try {
-        // Check today first, then yesterday if no data
         lowStockResult = await this.dailyInventoryRepository
           .createQueryBuilder('inv')
-          .where('inv.businessDate = :today', { today })
+          .where('inv.businessDate = :today', { today: checkDate })
           .andWhere('inv.isActive = :isActive', { isActive: true })
           .andWhere('inv.minimumStock > 0')
           .andWhere('inv.stokAkhir <= inv.minimumStock')
           .getCount();
 
         if (lowStockResult === 0) {
-          // Try yesterday
+          // fallback to yesterday if cron hasn't run
+          const yesterdayCheck = dayjs()
+            .subtract(1, 'day')
+            .format('YYYY-MM-DD');
           lowStockResult = await this.dailyInventoryRepository
             .createQueryBuilder('inv')
-            .where('inv.businessDate = :yesterday', { yesterday })
+            .where('inv.businessDate = :yesterday', {
+              yesterday: yesterdayCheck,
+            })
             .andWhere('inv.isActive = :isActive', { isActive: true })
             .andWhere('inv.minimumStock > 0')
             .andWhere('inv.stokAkhir <= inv.minimumStock')
@@ -271,17 +340,18 @@ export class DashboardService {
         lowStockResult = 0;
       }
 
-      // New customers this month
+      // New customers this month (Range Query)
       const newCustomersResult = await this.customersRepository
         .createQueryBuilder('customer')
-        .where('DATE(customer.createdAt) >= :startOfMonth', { startOfMonth })
+        .where('customer.createdAt >= :start', { start })
+        .andWhere('customer.createdAt <= :end', { end })
         .andWhere(
           '(customer.isDeleted IS NULL OR customer.isDeleted = :isDeleted)',
           { isDeleted: false },
         )
         .getCount();
 
-      // Active production batches (IN_PROGRESS)
+      // Active production batches (Current State)
       let activeBatchesResult = 0;
       let qcPendingResult = 0;
       try {
@@ -312,7 +382,6 @@ export class DashboardService {
       };
     } catch (error) {
       console.error('Error in getStatsV2:', error);
-      // Return default values on error
       return {
         todayRevenue: 0,
         yesterdayRevenue: 0,
@@ -327,9 +396,11 @@ export class DashboardService {
     }
   }
 
-  async getSalesByCustomerType(): Promise<SalesByCustomerTypeDto[]> {
-    const startOfMonth = dayjs().startOf('month').format('YYYY-MM-DD');
-    const endOfMonth = dayjs().endOf('month').format('YYYY-MM-DD');
+  async getSalesByCustomerType(
+    year?: number,
+    month?: number,
+  ): Promise<SalesByCustomerTypeDto[]> {
+    const { start, end } = this.getDateRange(year, month);
 
     try {
       // Join with customers table using customerId
@@ -339,8 +410,8 @@ export class DashboardService {
         .addSelect('SUM(order.grandTotal)', 'revenue')
         .addSelect('COUNT(order.id)', 'orderCount')
         .innerJoin('order.customer', 'customer')
-        .where('DATE(order.orderDate) >= :startOfMonth', { startOfMonth })
-        .andWhere('DATE(order.orderDate) <= :endOfMonth', { endOfMonth })
+        .where('order.orderDate >= :start', { start })
+        .andWhere('order.orderDate <= :end', { end })
         .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
           isDeleted: false,
         })
@@ -348,12 +419,10 @@ export class DashboardService {
         .groupBy('customer.customerType')
         .getRawMany();
 
-      // If no data from join, return empty array
       if (!salesByType?.length) {
         return [];
       }
 
-      // Calculate total revenue for percentage
       const totalRevenue = salesByType.reduce(
         (sum, item) => sum + Number(item.revenue || 0),
         0,
@@ -460,23 +529,20 @@ export class DashboardService {
     };
   }
 
-  /**
-   * Get count of distinct customers who ordered this month, grouped by type
-   * Returns: { hotel, cafeResto, catering, reseller, total }
-   */
-  async getActiveCustomersByType(): Promise<ActiveCustomersByTypeDto> {
-    const startOfMonth = dayjs().startOf('month').format('YYYY-MM-DD');
-    const endOfMonth = dayjs().endOf('month').format('YYYY-MM-DD');
+  async getActiveCustomersByType(
+    year?: number,
+    month?: number,
+  ): Promise<ActiveCustomersByTypeDto> {
+    const { start, end } = this.getDateRange(year, month);
 
     try {
-      // Query distinct customers who ordered this month, grouped by type
       const customersByType = await this.ordersRepository
         .createQueryBuilder('order')
         .select('customer.customerType', 'type')
         .addSelect('COUNT(DISTINCT order.customerId)', 'customerCount')
         .innerJoin('order.customer', 'customer')
-        .where('DATE(order.orderDate) >= :startOfMonth', { startOfMonth })
-        .andWhere('DATE(order.orderDate) <= :endOfMonth', { endOfMonth })
+        .where('order.orderDate >= :start', { start })
+        .andWhere('order.orderDate <= :end', { end })
         .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
           isDeleted: false,
         })
@@ -484,7 +550,6 @@ export class DashboardService {
         .groupBy('customer.customerType')
         .getRawMany();
 
-      // Initialize counts
       const result: ActiveCustomersByTypeDto = {
         hotel: 0,
         cafeResto: 0,
@@ -493,7 +558,6 @@ export class DashboardService {
         total: 0,
       };
 
-      // Map results to response
       customersByType.forEach((row) => {
         const count = Number(row.customerCount || 0);
         result.total += count;

@@ -9,6 +9,7 @@ import {
 import {
   getJakartaDateString,
   getJakartaDate,
+  getPreviousJakartaDateString,
 } from '../../../common/utils/date.util';
 import { InjectRepository } from '@nestjs/typeorm';
 import {
@@ -262,9 +263,11 @@ export class InventoryTransactionService extends BaseResponse {
 
     try {
       // 1. Validate product exists and is a material (not finished goods)
+      // ✅ FIX: Check BOTH Main Category (ProductCode) and Sub Category (Product)
+      // Some materials like "NAGA" only have Main Category "Barang Baku" on ProductCode
       const productCode = await this.productCodesRepo.findOne({
         where: { id: dto.productCodeId },
-        relations: ['product', 'product.category'],
+        relations: ['product', 'category'],
       });
 
       if (!productCode) {
@@ -273,7 +276,7 @@ export class InventoryTransactionService extends BaseResponse {
         );
       }
 
-      const categoryName = productCode.product?.category?.name || '';
+      const categoryName = productCode?.category?.name || '';
       const isMaterial =
         categoryName === 'Barang Baku' ||
         categoryName === 'Barang Pembantu' ||
@@ -281,14 +284,24 @@ export class InventoryTransactionService extends BaseResponse {
 
       if (!isMaterial) {
         throw new BadRequestException(
-          `Produk "${productCode.product?.name}" bukan material. Gunakan endpoint production untuk Barang Jadi.`,
+          `Produk "${productCode.product?.name}" bukan material (Kategori: ${categoryName}). Gunakan endpoint production untuk Barang Jadi.`,
         );
       }
 
       // 2. Get business date (use purchaseDate if provided, otherwise today)
-      const businessDateStr =
-        dto.purchaseDate || new Date().toISOString().split('T')[0];
-      const businessDate = new Date(businessDateStr);
+      // ✅ FIX: Use consistent Date handling with Jakarta Timezone
+      let businessDate: Date;
+      let businessDateStr: string;
+
+      if (dto.purchaseDate) {
+        // If purchaseDate provided (string YYYY-MM-DD), use it directly
+        businessDateStr = dto.purchaseDate;
+        businessDate = new Date(businessDateStr);
+      } else {
+        // If not provided, use today in Jakarta time
+        businessDateStr = getJakartaDateString();
+        businessDate = new Date(businessDateStr);
+      }
 
       // 3. Get or create daily_inventory for this business date
       const dailyInventory = await this.getOrCreateDailyInventory(
@@ -372,14 +385,12 @@ export class InventoryTransactionService extends BaseResponse {
 
       await queryRunner.manager.save(InventoryTransactions, transaction);
 
-      await queryRunner.manager.save(InventoryTransactions, transaction);
-
       // 9. ✅ FIX: Update daily_inventory.barangMasuk with propagation
       await this.dailyInventoryService.updateStockWithPropagation(
         dto.productCodeId,
         dto.quantity,
         {
-          businessDate: businessDate.toISOString().split('T')[0],
+          businessDate: businessDateStr, // Use validated string date
           userId,
           column: 'barangMasuk',
         },

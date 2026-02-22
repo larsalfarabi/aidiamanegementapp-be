@@ -9,6 +9,7 @@ import {
   Delete,
 } from '@nestjs/common';
 import { OrdersService } from './orders.service';
+import { OrderInventoryCronService } from './services/order-inventory-cron.service';
 import {
   CreateOrderDto,
   OrderFilterDto,
@@ -28,7 +29,10 @@ import { DeleteOrderDto } from './dto/orders.dto';
 @UseGuards(JwtGuard, PermissionGuard)
 @Controller('orders')
 export class OrdersController {
-  constructor(private readonly ordersService: OrdersService) {}
+  constructor(
+    private readonly ordersService: OrdersService,
+    private readonly orderInventoryCron: OrderInventoryCronService,
+  ) {}
 
   /**
    * Create new order
@@ -100,5 +104,14 @@ export class OrdersController {
     @InjectDeletedBy() payload: DeleteOrderDto,
   ) {
     return this.ordersService.delete(+id, payload);
+  }
+
+  /**
+   * Manual trigger: Process future-dated orders for today
+   */
+  @Post('admin/process-future-orders')
+  @RequirePermissions(`${Resource.ORDER}:${Action.CREATE}`)
+  async processFutureOrders() {
+    return this.orderInventoryCron.manualTrigger();
   }
 }

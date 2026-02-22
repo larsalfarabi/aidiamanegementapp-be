@@ -34,6 +34,10 @@ import {
   ProductCodeQueryDto,
   QueryProductDto,
 } from './dto/products.dto';
+import {
+  CreatePackagingMaterialDto,
+  UpdatePackagingMaterialDto,
+} from './dto/packaging-material.dto';
 // import { CacheInterceptor, CacheKey, CacheTTL } from '@nestjs/cache-manager';
 import { InjectDeletedBy } from '../../common/decorator/inject-deletedBy.decorator';
 
@@ -84,6 +88,45 @@ export class ProductsController {
     @InjectDeletedBy() payload: DeleteProductCodeDto,
   ) {
     return this.productsService.deleteProductCode(id, payload);
+  }
+
+  // * --- PACKAGING MATERIALS CRUD --- */
+  @Get(':id/packaging')
+  @RequirePermissions(`${Resource.PRODUCT}:${Action.VIEW}`)
+  async getPackagingMaterials(@Param('id', ParseIntPipe) id: number) {
+    return this.productsService.getPackagingMaterials(id);
+  }
+
+  @Post(':id/packaging')
+  @RequirePermissions(`${Resource.PRODUCT}:${Action.UPDATE}`)
+  async addPackagingMaterial(
+    @Param('id', ParseIntPipe) id: number,
+    @InjectCreatedBy() payload: CreatePackagingMaterialDto,
+  ) {
+    return this.productsService.addPackagingMaterial(id, payload);
+  }
+
+  @Put(':id/packaging/:packagingId')
+  @RequirePermissions(`${Resource.PRODUCT}:${Action.UPDATE}`)
+  async updatePackagingMaterial(
+    @Param('packagingId', ParseIntPipe) packagingId: number,
+    @InjectUpdatedBy() payload: UpdatePackagingMaterialDto,
+  ) {
+    return this.productsService.updatePackagingMaterial(packagingId, payload);
+  }
+
+  @Delete(':id/packaging/:packagingId')
+  @RequirePermissions(`${Resource.PRODUCT}:${Action.UPDATE}`)
+  async removePackagingMaterial(
+    @Param('packagingId', ParseIntPipe) packagingId: number,
+  ) {
+    return this.productsService.removePackagingMaterial(packagingId);
+  }
+
+  @Post(':id/packaging/auto-suggest')
+  @RequirePermissions(`${Resource.PRODUCT}:${Action.VIEW}`)
+  async autoSuggestPackaging(@Param('id', ParseIntPipe) id: number) {
+    return this.productsService.autoSuggestPackaging(id);
   }
 
   // * --- PRODUCTS --- */

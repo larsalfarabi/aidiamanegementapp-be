@@ -20,6 +20,9 @@ export class Orders extends BaseEntity {
   @Column({ unique: true, length: 50, nullable: true })
   invoiceNumber: string; // Invoice number (SL/OJ-MKT/IX/25/0001)
 
+  @Column({ length: 50, nullable: true })
+  previousInvoiceNumber: string; // Nomor invoice sebelumnya (jika bulan berubah saat edit)
+
   @ManyToOne(() => Customers)
   @JoinColumn({ name: 'customerId' })
   customer: Customers;
@@ -76,6 +79,9 @@ export class Orders extends BaseEntity {
     cascade: true,
   })
   orderItems: OrderItems[];
+
+  @Column({ default: false })
+  inventoryDeducted: boolean; // Apakah stok sudah dikurangi untuk pesanan ini
 
   @Column({ nullable: true })
   isDeleted: boolean;

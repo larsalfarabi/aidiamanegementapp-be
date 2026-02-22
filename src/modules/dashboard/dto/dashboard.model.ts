@@ -211,6 +211,15 @@ export class ActiveCustomersByType {
   total: number;
 }
 
+@ObjectType()
+export class AvailableMonth {
+  @Field(() => Int)
+  year: number;
+
+  @Field(() => Int)
+  month: number;
+}
+
 // Unified Output Type for Single Query
 @ObjectType()
 export class DashboardData {
@@ -237,4 +246,7 @@ export class DashboardData {
 
   @Field(() => ActiveCustomersByType)
   activeCustomers: ActiveCustomersByType;
+
+  @Field(() => [AvailableMonth], { nullable: true })
+  availableMonths?: AvailableMonth[];
 }

@@ -59,7 +59,7 @@ export class DailyInventorySnapshots {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     comment: 'Opening stock at snapshot time',
   })
   stokAwal: number;
@@ -67,7 +67,7 @@ export class DailyInventorySnapshots {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     comment: 'Goods in during the day',
   })
   barangMasuk: number;
@@ -75,7 +75,7 @@ export class DailyInventorySnapshots {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     comment: 'Orders with invoice date on snapshot date',
   })
   dipesan: number;
@@ -83,7 +83,7 @@ export class DailyInventorySnapshots {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     comment: 'Goods out for repacking',
   })
   barangOutRepack: number;
@@ -91,7 +91,7 @@ export class DailyInventorySnapshots {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     comment: 'Goods out as samples',
   })
   barangOutSample: number;
@@ -99,7 +99,7 @@ export class DailyInventorySnapshots {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     default: 0,
     comment: 'Goods out for production (materials only)',
   })
@@ -113,7 +113,7 @@ export class DailyInventorySnapshots {
   @Column({
     type: 'decimal',
     precision: 10,
-    scale: 2,
+    scale: 4,
     comment: 'Ending stock (snapshot value, not generated)',
   })
   stokAkhir: number;

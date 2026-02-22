@@ -10,9 +10,8 @@ import {
   ProductionSummary,
   LowStockSummary,
   ActiveCustomersByType,
+  AvailableMonth,
 } from './dto/dashboard.model';
-// Note: We need to import the original DTOs to map or just duplicate logic if service returns pure objects
-// In this case, NestJS serializers often handle plain objects if they match the class structure.
 
 import { UseGuards } from '@nestjs/common';
 import { JwtGuard } from '../../modules/auth/guards/auth.guard';
@@ -23,8 +22,10 @@ export class DashboardResolver {
   constructor(private readonly dashboardService: DashboardService) {}
 
   @Query(() => DashboardData, { name: 'dashboardData' })
- 
-  async getDashboardData(): Promise<DashboardData> {
+  async getDashboardData(
+    @Args('month', { type: () => Int, nullable: true }) month?: number,
+    @Args('year', { type: () => Int, nullable: true }) year?: number,
+  ): Promise<DashboardData> {
     // Parallel resolution for maximum performance
     const [
       stats,
@@ -35,15 +36,17 @@ export class DashboardResolver {
       productionSummary,
       lowStockSummary,
       activeCustomers,
+      availableMonths,
     ] = await Promise.all([
-      this.dashboardService.getStatsV2(),
-      this.dashboardService.getSalesChartData(),
-      this.dashboardService.getTopProducts(5),
+      this.dashboardService.getStatsV2(year, month),
+      this.dashboardService.getSalesChartData(year, month),
+      this.dashboardService.getTopProducts(5, year, month),
       this.dashboardService.getRecentActivities(5),
-      this.dashboardService.getSalesByCustomerType(),
+      this.dashboardService.getSalesByCustomerType(year, month),
       this.dashboardService.getProductionSummary(),
       this.dashboardService.getLowStockItems(5),
-      this.dashboardService.getActiveCustomersByType(),
+      this.dashboardService.getActiveCustomersByType(year, month),
+      this.dashboardService.getAvailableMonths(),
     ]);
 
     return {
@@ -56,19 +59,29 @@ export class DashboardResolver {
       productionSummary: productionSummary as unknown as ProductionSummary,
       lowStockSummary: lowStockSummary as unknown as LowStockSummary,
       activeCustomers: activeCustomers as unknown as ActiveCustomersByType,
+      availableMonths: availableMonths as unknown as AvailableMonth[],
     };
   }
 
   // Individual Queries if needed for granular fetching
   @Query(() => DashboardStatsV2, { name: 'dashboardStats' })
- 
-  async getStats() {
-    return this.dashboardService.getStatsV2();
+  async getStats(
+    @Args('month', { type: () => Int, nullable: true }) month?: number,
+    @Args('year', { type: () => Int, nullable: true }) year?: number,
+  ) {
+    return this.dashboardService.getStatsV2(year, month);
   }
 
   @Query(() => [SalesChartData], { name: 'salesChart' })
- 
-  async getSalesChart() {
-    return this.dashboardService.getSalesChartData();
+  async getSalesChart(
+    @Args('month', { type: () => Int, nullable: true }) month?: number,
+    @Args('year', { type: () => Int, nullable: true }) year?: number,
+  ) {
+    return this.dashboardService.getSalesChartData(year, month);
+  }
+
+  @Query(() => [AvailableMonth], { name: 'availableMonths' })
+  async getAvailableMonths() {
+    return this.dashboardService.getAvailableMonths();
   }
 }
