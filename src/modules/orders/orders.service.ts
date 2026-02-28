@@ -642,7 +642,10 @@ export class OrdersService extends BaseResponse {
         'COUNT(*) as totalOrders',
         'SUM(order.grandTotal) as totalRevenue',
         'SUM(order.remainingAmount) as totalOutstanding',
-      ]);
+      ])
+      .where('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
+        isDeleted: false,
+      });
 
     // Apply date filter if provided
     if (filters?.startDate && filters?.endDate) {

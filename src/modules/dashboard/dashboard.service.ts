@@ -50,9 +50,10 @@ export class DashboardService {
   async getAvailableMonths(): Promise<AvailableMonthDto[]> {
     const dates = await this.ordersRepository
       .createQueryBuilder('order')
-      .select('YEAR(order.orderDate)', 'year')
-      .addSelect('MONTH(order.orderDate)', 'month')
-      .where('order.isDeleted IS NULL OR order.isDeleted = :isDeleted', {
+      .select('YEAR(order.invoiceDate)', 'year')
+      .addSelect('MONTH(order.invoiceDate)', 'month')
+      .where('order.invoiceNumber IS NOT NULL')
+      .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
         isDeleted: false,
       })
       .groupBy('year, month')
@@ -118,14 +119,17 @@ export class DashboardService {
     // Opt for Range Query (Index Friendly)
     const salesData = await this.ordersRepository
       .createQueryBuilder('order')
-      .select("DATE_FORMAT(order.orderDate, '%Y-%m')", 'month')
-      .addSelect('SUM(order.grandTotal)', 'total')
-      .where('order.orderDate >= :startDate', { startDate: startDate.toDate() })
-      .andWhere('order.orderDate <= :endDate', { endDate: endDate.toDate() })
-      .andWhere('order.isDeleted IS NULL OR order.isDeleted = :isDeleted', {
+      .select("DATE_FORMAT(order.invoiceDate, '%Y-%m')", 'month')
+      .addSelect('SUM(order.subtotal)', 'total')
+      .where('order.invoiceDate >= :startDate', {
+        startDate: startDate.toDate(),
+      })
+      .andWhere('order.invoiceDate <= :endDate', { endDate: endDate.toDate() })
+      .andWhere('order.invoiceNumber IS NOT NULL')
+      .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
         isDeleted: false,
       })
-      .groupBy("DATE_FORMAT(order.orderDate, '%Y-%m')")
+      .groupBy("DATE_FORMAT(order.invoiceDate, '%Y-%m')")
       .getRawMany();
 
     const salesMap = new Map<string, number>();
@@ -184,9 +188,10 @@ export class DashboardService {
         'inv.productCodeId = item.productCodeId AND inv.businessDate = :today',
         { today: endStr }, // Use end date of period for stock reference logic
       )
-      .where('o.orderDate >= :startDate', { startDate: start })
-      .andWhere('o.orderDate <= :endDate', { endDate: end })
-      .andWhere('o.isDeleted IS NULL OR o.isDeleted = :isDeleted', {
+      .where('o.invoiceDate >= :startDate', { startDate: start })
+      .andWhere('o.invoiceDate <= :endDate', { endDate: end })
+      .andWhere('o.invoiceNumber IS NOT NULL')
+      .andWhere('(o.isDeleted IS NULL OR o.isDeleted = :isDeleted)', {
         isDeleted: false,
       })
 
@@ -258,9 +263,10 @@ export class DashboardService {
       // Today's revenue (Optimized Index Usage)
       const todayRevenueResult = await this.ordersRepository
         .createQueryBuilder('order')
-        .select('SUM(order.grandTotal)', 'total')
-        .where('order.orderDate >= :start', { start: todayStart })
-        .andWhere('order.orderDate < :end', { end: todayEnd }) // Less than next day
+        .select('SUM(order.subtotal)', 'total')
+        .where('order.invoiceDate >= :start', { start: todayStart })
+        .andWhere('order.invoiceDate < :end', { end: todayEnd }) // Less than next day
+        .andWhere('order.invoiceNumber IS NOT NULL')
         .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
           isDeleted: false,
         })
@@ -269,9 +275,10 @@ export class DashboardService {
       // Yesterday's revenue
       const yesterdayRevenueResult = await this.ordersRepository
         .createQueryBuilder('order')
-        .select('SUM(order.grandTotal)', 'total')
-        .where('order.orderDate >= :start', { start: yesterdayStart })
-        .andWhere('order.orderDate < :end', { end: yesterdayEnd })
+        .select('SUM(order.subtotal)', 'total')
+        .where('order.invoiceDate >= :start', { start: yesterdayStart })
+        .andWhere('order.invoiceDate < :end', { end: yesterdayEnd })
+        .andWhere('order.invoiceNumber IS NOT NULL')
         .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
           isDeleted: false,
         })
@@ -287,8 +294,9 @@ export class DashboardService {
       // Today's orders count
       const todayOrdersResult = await this.ordersRepository
         .createQueryBuilder('order')
-        .where('order.orderDate >= :start', { start: todayStart })
-        .andWhere('order.orderDate < :end', { end: todayEnd })
+        .where('order.invoiceDate >= :start', { start: todayStart })
+        .andWhere('order.invoiceDate < :end', { end: todayEnd })
+        .andWhere('order.invoiceNumber IS NOT NULL')
         .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
           isDeleted: false,
         })
@@ -297,9 +305,10 @@ export class DashboardService {
       // Monthly revenue (Selected Month)
       const monthlyRevenueResult = await this.ordersRepository
         .createQueryBuilder('order')
-        .select('SUM(order.grandTotal)', 'total')
-        .where('order.orderDate >= :start', { start })
-        .andWhere('order.orderDate <= :end', { end })
+        .select('SUM(order.subtotal)', 'total')
+        .where('order.invoiceDate >= :start', { start })
+        .andWhere('order.invoiceDate <= :end', { end })
+        .andWhere('order.invoiceNumber IS NOT NULL')
         .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
           isDeleted: false,
         })
@@ -407,11 +416,12 @@ export class DashboardService {
       const salesByType = await this.ordersRepository
         .createQueryBuilder('order')
         .select('customer.customerType', 'type')
-        .addSelect('SUM(order.grandTotal)', 'revenue')
+        .addSelect('SUM(order.subtotal)', 'revenue')
         .addSelect('COUNT(order.id)', 'orderCount')
         .innerJoin('order.customer', 'customer')
-        .where('order.orderDate >= :start', { start })
-        .andWhere('order.orderDate <= :end', { end })
+        .where('order.invoiceDate >= :start', { start })
+        .andWhere('order.invoiceDate <= :end', { end })
+        .andWhere('order.invoiceNumber IS NOT NULL')
         .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
           isDeleted: false,
         })
@@ -541,8 +551,9 @@ export class DashboardService {
         .select('customer.customerType', 'type')
         .addSelect('COUNT(DISTINCT order.customerId)', 'customerCount')
         .innerJoin('order.customer', 'customer')
-        .where('order.orderDate >= :start', { start })
-        .andWhere('order.orderDate <= :end', { end })
+        .where('order.invoiceDate >= :start', { start })
+        .andWhere('order.invoiceDate <= :end', { end })
+        .andWhere('order.invoiceNumber IS NOT NULL')
         .andWhere('(order.isDeleted IS NULL OR order.isDeleted = :isDeleted)', {
           isDeleted: false,
         })
